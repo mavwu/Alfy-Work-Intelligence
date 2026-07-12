@@ -1,4 +1,3 @@
-import re
 from datetime import date
 from typing import Any
 
@@ -6,7 +5,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..models import AppSetting
-from .ai import AIUnavailable, OllamaProvider
+from .semantic_extraction import (
+    SemanticAnalysisRun,
+    SemanticEventSchema,
+    SemanticExtractionSchema,
+    deterministic_semantic_analysis,
+    extract_semantic_analysis,
+    normalized_semantic_text,
+)
 
 
 class ExtractedWorkItem(BaseModel):
@@ -27,83 +33,136 @@ class WorkExtraction(BaseModel):
     items: list[ExtractedWorkItem] = Field(default_factory=list)
 
 
-SYSTEM_WORK_LOG = """You extract conservative engineering work items from messy local notes.
-Preserve uncertainty. Do not invent accomplishments. Split long summaries into multiple work items only when the evidence clearly describes distinct tasks."""
-
-
 def selected_model(db: Session) -> str:
     setting = db.get(AppSetting, "selected_model")
     return setting.value if setting else ""
 
 
+def extract_work_items_with_metadata(db: Session, raw_text: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    semantic_result, analysis = extract_semantic_analysis(db, raw_text)
+    items = semantic_result_to_work_items(semantic_result, raw_text, analysis)
+    return items, analysis.model_dump()
+
+
 def extract_work_items(db: Session, raw_text: str) -> list[dict[str, Any]]:
-    model = selected_model(db)
-    provider = OllamaProvider()
-    if model and provider.health_check().get("available"):
-        prompt = f"""
-Extract work items from this Ride Yanga work evidence.
-
-Rules:
-- Original text may contain one or many tasks.
-- Use REVIEW status and INFERRED confidence unless the user explicitly confirmed completion.
-- Keep titles factual and modest.
-- Use ISO dates when dates are visible; otherwise use today's date.
-
-Evidence:
-{raw_text[:12000]}
-"""
-        try:
-            result = provider.generate_structured(model, prompt, WorkExtraction, system=SYSTEM_WORK_LOG)
-            return [item.model_dump() for item in result.items if item.title and item.summary]
-        except (AIUnavailable, Exception):
-            pass
-    return deterministic_extract(raw_text)
-
-
-def deterministic_extract(raw_text: str) -> list[dict[str, Any]]:
-    text = raw_text.strip()
-    if not text:
-        return []
-    chunks = split_possible_tasks(text)
-    items = []
-    for chunk in chunks[:8]:
-        lower = chunk.lower()
-        title = infer_title(chunk)
-        area = infer_area(lower)
-        work_type = infer_work_type(lower)
-        items.append(
-            {
-                "title": title,
-                "area": area,
-                "work_type": work_type,
-                "summary": summarize_chunk(chunk),
-                "work_date": date.today().isoformat(),
-                "status": "REVIEW",
-                "challenges": extract_after(lower, chunk, ["issue", "problem", "challenge", "blocked"]),
-                "findings": extract_after(lower, chunk, ["found", "noticed", "confirmed", "identified"]),
-                "fixes": extract_after(lower, chunk, ["fixed", "resolved", "implemented", "updated"]),
-                "pending_work": extract_after(lower, chunk, ["pending", "next", "todo", "still"]),
-                "confidence": 0.45,
-            }
-        )
+    items, _ = extract_work_items_with_metadata(db, raw_text)
     return items
 
 
-def split_possible_tasks(text: str) -> list[str]:
-    bullet_parts = [p.strip(" -\t") for p in re.split(r"\n\s*(?:[-*]|\d+[.)])\s+", text) if p.strip()]
-    if len(bullet_parts) > 1:
-        return bullet_parts
-    sentence_parts = re.split(r"(?<=[.!?])\s+(?=(?:also|then|next|after|fixed|implemented|investigated|checked)\b)", text, flags=re.I)
-    return [p.strip() for p in sentence_parts if p.strip()] or [text]
+def deterministic_extract(raw_text: str) -> list[dict[str, Any]]:
+    semantic_result = deterministic_semantic_analysis(raw_text)
+    analysis = SemanticAnalysisRun(
+        analysis_mode="EVIDENCE_ONLY",
+        provider="Deterministic",
+        model="",
+        fallback_reason="Deterministic fallback used.",
+    )
+    return semantic_result_to_work_items(semantic_result, raw_text, analysis)
+
+
+def semantic_result_to_work_items(
+    result: SemanticExtractionSchema,
+    raw_text: str,
+    analysis: SemanticAnalysisRun | dict[str, Any],
+) -> list[dict[str, Any]]:
+    mode = analysis.analysis_mode if isinstance(analysis, SemanticAnalysisRun) else analysis.get("analysis_mode", "EVIDENCE_ONLY")
+    items: list[dict[str, Any]] = []
+    for event in result.events[:8]:
+        item = event_to_work_item(event, raw_text, mode)
+        if item["title"] and item["summary"]:
+            items.append(item)
+    if items:
+        return items
+    fallback_event = fallback_event_from_text(raw_text)
+    return [event_to_work_item(fallback_event, raw_text, mode)]
+
+
+def event_to_work_item(event: SemanticEventSchema, raw_text: str, analysis_mode: str) -> dict[str, Any]:
+    text_parts = [event.event_subject, *event.initial_context, *event.requirement_change]
+    text_parts.extend(fact.statement for fact in event.actions_performed)
+    text_parts.extend(fact.statement for fact in event.findings)
+    text_parts.extend(fact.statement for fact in event.open_questions)
+    text_parts.extend(fact.statement for fact in event.pending_actions)
+    summary = summarize_parts(text_parts, raw_text)
+    title = infer_title_from_event(event, summary)
+    area = infer_area(summary.lower())
+    work_type = infer_work_type(summary.lower(), event)
+    findings = join_unique([fact.statement for fact in event.findings])
+    fixes = join_unique(
+        [
+            fact.statement
+            for fact in event.actions_performed
+            if fact.status == "COMPLETED" or any(token in fact.statement.lower() for token in ["fixed", "implemented", "resolved", "updated", "changed", "restored", "working again", "started showing"])
+        ]
+    )
+    pending_work = join_unique([fact.statement for fact in event.open_questions + event.pending_actions])
+    challenges = join_unique([fact.statement for fact in event.pending_actions] or [fact.statement for fact in event.open_questions])
+    confidence = 0.72 if analysis_mode == "OLLAMA" else 0.45
+    return {
+        "title": title,
+        "area": area,
+        "work_type": work_type,
+        "summary": summary,
+        "work_date": date.today().isoformat(),
+        "status": "REVIEW",
+        "challenges": challenges,
+        "findings": findings,
+        "fixes": fixes,
+        "pending_work": pending_work,
+        "confidence": confidence,
+    }
+
+
+def fallback_event_from_text(raw_text: str) -> SemanticEventSchema:
+    semantic_result = deterministic_semantic_analysis(raw_text)
+    return semantic_result.events[0] if semantic_result.events else SemanticEventSchema(event_subject="General engineering work")
+
+
+def infer_title_from_event(event: SemanticEventSchema, summary: str) -> str:
+    subject = clean_title(event.event_subject)
+    if not subject:
+        return infer_title(summary)
+    if len(subject) <= 90:
+        return subject
+    return subject[:90]
+
+
+def summarize_parts(parts: list[str], raw_text: str) -> str:
+    chosen = [clean_summary_part(part) for part in parts if clean_summary_part(part)]
+    if not chosen:
+        chosen = [clean_summary_part(raw_text)]
+    summary = " ".join(chosen)
+    return summary[:800]
+
+
+def clean_summary_part(text: str) -> str:
+    return " ".join((text or "").split()).strip(" -")
+
+
+def clean_title(text: str) -> str:
+    cleaned = clean_summary_part(text)
+    cleaned = cleaned.replace("requester", "Requester")
+    return cleaned[:90]
+
+
+def join_unique(parts: list[str]) -> str | None:
+    values = []
+    seen = set()
+    for part in parts:
+        normalized = normalized_semantic_text(part)
+        if part and normalized not in seen:
+            values.append(clean_summary_part(part))
+            seen.add(normalized)
+    if not values:
+        return None
+    return "; ".join(values)[:800]
 
 
 def infer_title(chunk: str) -> str:
-    words = re.findall(r"[A-Za-z0-9/+-]+", chunk)
-    important = [w for w in words if len(w) > 3][:7]
-    if not important:
+    words = [word for word in chunk.split() if len(word) > 2]
+    if not words:
         return "Work Log Entry"
-    title = " ".join(important).title()
-    return title[:90]
+    return " ".join(words[:8]).title()[:90]
 
 
 def infer_area(lower: str) -> str:
@@ -118,6 +177,8 @@ def infer_area(lower: str) -> str:
         "user app": "User App",
         "wordpress": "Website",
         "permalink": "Website",
+        "image": "Media / Assets",
+        "icon": "Media / Assets",
     }
     for needle, area in areas.items():
         if needle in lower:
@@ -125,24 +186,13 @@ def infer_area(lower: str) -> str:
     return "General Engineering"
 
 
-def infer_work_type(lower: str) -> str:
-    if any(word in lower for word in ["investigat", "checked", "found", "research"]):
+def infer_work_type(lower: str, event: SemanticEventSchema | None = None) -> str:
+    if event and (event.pending_actions or event.open_questions):
         return "Technical Investigation"
-    if any(word in lower for word in ["bug", "fixed", "resolved", "issue"]):
+    if any(word in lower for word in ["bug", "fixed", "resolved", "issue", "error"]):
         return "Bug Fix"
-    if any(word in lower for word in ["implemented", "added", "built", "created"]):
+    if any(word in lower for word in ["implemented", "added", "built", "created", "changed", "updated"]):
         return "Feature Work"
+    if any(word in lower for word in ["investigat", "checked", "found", "confirmed", "inspected"]):
+        return "Technical Investigation"
     return "Work Log"
-
-
-def summarize_chunk(chunk: str) -> str:
-    compact = re.sub(r"\s+", " ", chunk).strip()
-    return compact[:700]
-
-
-def extract_after(lower: str, original: str, markers: list[str]) -> str | None:
-    for marker in markers:
-        index = lower.find(marker)
-        if index >= 0:
-            return original[index : index + 260].strip()
-    return None

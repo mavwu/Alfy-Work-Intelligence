@@ -78,7 +78,7 @@ def scan_repository(db: Session, repository_id: int, date_from: str | None = Non
             args.append(f"--since={date_from}")
         if date_to:
             args.append(f"--until={date_to} 23:59:59")
-        args.extend(["--", *pathspec_excludes()])
+        args.extend(["--", *pathspec_filters()])
         update_job(job_id, 18, f"{stage}: {repo.name}") if job_id else None
         output = git(repo.local_path, args, timeout=80, stage=stage)
 
@@ -161,7 +161,7 @@ def scan_repository(db: Session, repository_id: int, date_from: str | None = Non
 
         stage = "READING_WORKING_TREE"
         update_job(job_id, 82, stage) if job_id else None
-        status = git(repo.local_path, ["status", "--short", "--", *pathspec_excludes()], timeout=30, stage=stage)
+        status = git(repo.local_path, ["status", "--short", "--", *pathspec_filters()], timeout=30, stage=stage)
         if status.strip():
             evidence = Evidence(
                 workspace_id=repo.workspace_id,
@@ -240,6 +240,10 @@ def pathspec_excludes() -> list[str]:
     return [f":(exclude){pattern}" for pattern in DEFAULT_IGNORE_PATTERNS]
 
 
+def pathspec_filters() -> list[str]:
+    return [".", *pathspec_excludes()]
+
+
 def parse_git_log(output: str) -> list[dict]:
     commits = []
     for record in output.split(RECORD_SEP):
@@ -288,7 +292,7 @@ def parse_iso(value: str) -> datetime | None:
 
 def diff_summary(repo_path: str, commit_hash: str) -> str:
     try:
-        summary = git(repo_path, ["show", "--stat", "--oneline", "--find-renames", commit_hash, "--", *pathspec_excludes()], timeout=30, stage="READING_FILE_CHANGES")
+        summary = git(repo_path, ["show", "--stat", "--oneline", "--find-renames", commit_hash, "--", *pathspec_filters()], timeout=30, stage="READING_FILE_CHANGES")
     except Exception:
         return ""
     return summary[:6000]

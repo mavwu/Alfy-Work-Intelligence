@@ -1,4 +1,6 @@
+import logging
 import re
+import time
 from datetime import date, timedelta
 
 from sqlalchemy.orm import Session
@@ -6,6 +8,8 @@ from sqlalchemy.orm import Session
 from ..models import AppSetting, Conversation, ConversationMessage, WorkItem
 from .ai import AIUnavailable, OllamaProvider
 from .fts import search_fts
+
+logger = logging.getLogger(__name__)
 
 
 def answer_work_question(db: Session, workspace_id: int, question: str, conversation_id: int | None = None) -> dict:
@@ -18,14 +22,32 @@ def answer_work_question(db: Session, workspace_id: int, question: str, conversa
     db.add(ConversationMessage(conversation_id=conversation.id, role="user", content=question))
     retrieved = search_fts(db, workspace_id, question, limit=10)
     retrieved = merge_retrieved(retrieved, intent_evidence_rows(db, workspace_id, question))
-    answer = ai_answer(db, question, retrieved) or deterministic_answer(db, workspace_id, question, retrieved)
+    answer_result = ai_answer(db, question, retrieved)
+    if answer_result:
+        answer = answer_result["answer"]
+        analysis_mode = answer_result["analysis_mode"]
+        provider = answer_result["provider"]
+        model = answer_result["model"]
+    else:
+        answer = deterministic_answer(db, workspace_id, question, retrieved)
+        analysis_mode = "EVIDENCE_ONLY"
+        provider = "Deterministic"
+        model = ""
     summary = summarize_evidence(retrieved)
     db.add(ConversationMessage(conversation_id=conversation.id, role="assistant", content=answer, evidence_summary=summary))
     db.commit()
-    return {"conversation_id": conversation.id, "answer": answer, "evidence": retrieved, "evidence_summary": summary}
+    return {
+        "conversation_id": conversation.id,
+        "answer": answer,
+        "evidence": retrieved,
+        "evidence_summary": summary,
+        "analysis_mode": analysis_mode,
+        "analysis_provider": provider,
+        "analysis_model": model,
+    }
 
 
-def ai_answer(db: Session, question: str, retrieved: list[dict]) -> str | None:
+def ai_answer(db: Session, question: str, retrieved: list[dict]) -> dict | None:
     setting = db.get(AppSetting, "selected_model")
     model = setting.value if setting else ""
     if not model:
@@ -42,10 +64,19 @@ Question: {question}
 
 Evidence:
 {context or 'No matching evidence was retrieved.'}
-"""
+    """
+    start = time.perf_counter()
     try:
-        return provider.generate_text(model, prompt, system="You are a grounded local work-memory assistant. Do not invent work history.")
-    except AIUnavailable:
+        answer = provider.generate_text(model, prompt, system="You are a grounded local work-memory assistant. Do not invent work history.")
+        logger.info(
+            "ai_chat mode=OLLAMA provider=Ollama model=%s duration=%.3fs retrieved=%s",
+            model,
+            round(time.perf_counter() - start, 3),
+            len(retrieved),
+        )
+        return {"answer": answer, "analysis_mode": "OLLAMA", "provider": "Ollama", "model": model}
+    except AIUnavailable as exc:
+        logger.warning("ai_chat fallback=deterministic reason=%s", exc)
         return None
 
 

@@ -5,7 +5,7 @@ from ..bootstrap import ensure_defaults
 from ..db import get_db
 from ..models import DocumentChunk, Evidence, ImportedDocument, WorkItem
 from ..services.documents import chunk_text, content_hash, extract_text, infer_document_metadata
-from ..services.extraction import extract_work_items
+from ..services.extraction import extract_work_items_with_metadata
 from ..services.fts import upsert_fts
 
 router = APIRouter()
@@ -42,7 +42,8 @@ async def import_documents(files: list[UploadFile] = File(...), use_as_style_ref
             db.add(DocumentChunk(document_id=doc.id, chunk_index=index, text=chunk))
             upsert_fts(db, "document_chunk", f"{doc.id}-{index}", workspace.id, doc.filename, chunk, "IMPORTED_DOCUMENT", "")
         extracted = []
-        for item_data in extract_work_items(db, text[:12000]):
+        extracted_items, analysis = extract_work_items_with_metadata(db, text[:12000])
+        for item_data in extracted_items:
             item = WorkItem(
                 workspace_id=workspace.id,
                 title=item_data["title"],
@@ -81,6 +82,9 @@ async def import_documents(files: list[UploadFile] = File(...), use_as_style_ref
                 "document_id": doc.id,
                 "document_type": doc.document_type,
                 "reporting_period": doc.reporting_period,
+                "analysis_mode": analysis["analysis_mode"],
+                "analysis_provider": analysis.get("provider"),
+                "analysis_model": analysis.get("model"),
                 "extracted_items": extracted,
             }
         )

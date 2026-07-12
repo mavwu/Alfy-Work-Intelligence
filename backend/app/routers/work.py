@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from ..bootstrap import ensure_defaults
 from ..db import get_db
 from ..models import Evidence, RawWorkLog, WorkItem
-from ..services.extraction import extract_work_items
+from ..services.extraction import extract_work_items_with_metadata
 from ..services.fts import upsert_fts
 
 router = APIRouter()
@@ -39,7 +39,7 @@ def create_work_log(payload: WorkLogIn, db: Session = Depends(get_db)):
     db.add(raw)
     db.flush()
     upsert_fts(db, "raw_work_log", raw.id, workspace.id, payload.source_label, raw.raw_text, "USER_LOG", raw.logged_at.date().isoformat())
-    extracted = extract_work_items(db, payload.raw_text)
+    extracted, analysis = extract_work_items_with_metadata(db, payload.raw_text)
     created = []
     for item_data in extracted:
         item = WorkItem(
@@ -73,7 +73,14 @@ def create_work_log(payload: WorkLogIn, db: Session = Depends(get_db)):
         upsert_fts(db, "work_item", item.id, workspace.id, item.title, item.summary, item.work_type or "Work item", item.work_date)
         created.append(serialize_item(item))
     db.commit()
-    return {"raw_log_id": raw.id, "extracted_items": created}
+    return {
+        "raw_log_id": raw.id,
+        "analysis_mode": analysis["analysis_mode"],
+        "analysis_provider": analysis.get("provider"),
+        "analysis_model": analysis.get("model"),
+        "analysis_fallback_reason": analysis.get("fallback_reason"),
+        "extracted_items": created,
+    }
 
 
 @router.get("/work-items")

@@ -448,7 +448,9 @@ def dedupe_lines(lines: list[str]) -> list[str]:
 
 def normalize_markdown(markdown: str) -> str:
     markdown = re.sub(r"\n{3,}", "\n\n", markdown)
-    markdown = re.sub(r"(?im)^audience:\s*.*$", "", markdown)
-    markdown = re.sub(r"(?im)^tone:\s*.*$", "", markdown)
+    markdown = re.sub(r"(?im)^#{1,6}\s*audience:\s*.*$", "", markdown)
+    markdown = re.sub(r"(?im)^#{1,6}\s*tone:\s*.*$", "", markdown)
+    markdown = re.sub(r"(?im)^#{1,6}\s*final date:\s*.*$", "", markdown)
+    markdown = re.sub(r"(?im)^\*\*?(audience|tone|final date):.*$", "", markdown)
     markdown = re.sub(r"(?m)^---+$", "", markdown)
     return markdown.strip()

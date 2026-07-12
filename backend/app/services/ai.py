@@ -24,7 +24,7 @@ class AIProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def generate_text(self, model: str, prompt: str, system: str = "") -> str:
+    def generate_text(self, model: str, prompt: str, system: str = "", options: dict[str, Any] | None = None) -> str:
         raise NotImplementedError
 
     def generate_structured(self, model: str, prompt: str, schema: type[BaseModel], system: str = "") -> BaseModel:
@@ -32,7 +32,7 @@ class AIProvider(ABC):
             f"{prompt}\n\nReturn only valid JSON matching this schema name: {schema.__name__}. "
             "Do not include markdown fences or commentary."
         )
-        raw = self.generate_text(model, schema_prompt, system=system)
+        raw = self.generate_text(model, schema_prompt, system=system, options={"temperature": 0})
         data = parse_json_object(raw)
         try:
             return schema.model_validate(data)
@@ -41,6 +41,7 @@ class AIProvider(ABC):
                 model,
                 f"Repair this malformed JSON for schema {schema.__name__}. Return JSON only.\n\n{raw}",
                 system=system,
+                options={"temperature": 0},
             )
             return schema.model_validate(parse_json_object(repaired))
 
@@ -70,12 +71,15 @@ class OllamaProvider(AIProvider):
         data = self._request("/api/tags", timeout=4)
         return [item.get("name", "") for item in data.get("models", []) if item.get("name")]
 
-    def generate_text(self, model: str, prompt: str, system: str = "") -> str:
+    def generate_text(self, model: str, prompt: str, system: str = "", options: dict[str, Any] | None = None) -> str:
         if not model:
             raise AIUnavailable("No Ollama model is selected.")
+        payload = {"model": model, "prompt": prompt, "system": system, "stream": False}
+        if options:
+            payload["options"] = options
         data = self._request(
             "/api/generate",
-            {"model": model, "prompt": prompt, "system": system, "stream": False},
+            payload,
             timeout=120,
         )
         return data.get("response", "").strip()

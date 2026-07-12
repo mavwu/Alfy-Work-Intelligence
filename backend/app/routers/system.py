@@ -40,22 +40,33 @@ def update_workspace(payload: WorkspaceUpdate, db: Session = Depends(get_db)):
 
 
 @router.get("/ai/status")
-def ai_status():
-    return OllamaProvider().health_check()
+def ai_status(db: Session = Depends(get_db)):
+    provider = OllamaProvider()
+    status = provider.health_check()
+    setting = db.get(AppSetting, "selected_model")
+    selected_model = setting.value if setting else ""
+    status["provider"] = "Ollama"
+    status["selected_model"] = selected_model
+    return status
 
 
 @router.post("/ai/test")
 def test_ai(payload: dict, db: Session = Depends(get_db)):
-    model = payload.get("model", "")
     provider = OllamaProvider()
     status = provider.health_check()
+    setting = db.get(AppSetting, "selected_model")
+    model = (payload.get("model") or (setting.value if setting else "")).strip()
+    status["provider"] = "Ollama"
+    status["selected_model"] = model
     if not status.get("available"):
         return status
     try:
+        if not model:
+            return {"available": False, "message": "No Ollama model is selected.", "models": status.get("models", []), "selected_model": ""}
         text = provider.generate_text(model, "Reply with one short sentence confirming you are ready to help summarize local work evidence.")
-        return {"available": True, "message": text, "models": status.get("models", [])}
+        return {"available": True, "message": text, "models": status.get("models", []), "selected_model": model}
     except Exception as exc:
-        return {"available": False, "message": str(exc), "models": status.get("models", [])}
+        return {"available": False, "message": str(exc), "models": status.get("models", []), "selected_model": model}
 
 
 @router.get("/settings")

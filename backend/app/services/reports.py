@@ -1,4 +1,6 @@
+import logging
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -11,6 +13,8 @@ from ..config import data_dir
 from ..models import AppSetting, Evidence, EvidenceRelationship, GeneratedReport, ReportRevision, ReportStyleProfile, WorkItem
 from .ai import AIUnavailable, OllamaProvider
 from .report_safety import build_report_plan, plan_to_markdown, presentation_plan_from_report_plan, refine_markdown, validate_and_rewrite
+
+logger = logging.getLogger(__name__)
 
 
 REPORT_TYPES = [
@@ -67,6 +71,7 @@ def generate_report(db: Session, workspace_id: int, report_type: str, date_from:
     profile = db.query(ReportStyleProfile).filter(ReportStyleProfile.workspace_id == workspace_id).first()
     plan = build_report_plan(report_type, date_from, date_to, included)
     generated = ai_report(db, report_type, date_from, date_to, included, profile) if included else None
+    analysis_mode = "OLLAMA" if generated else "EVIDENCE_ONLY"
     markdown, notes = validate_and_rewrite(generated or deterministic_report(report_type, date_from, date_to, included, profile), plan)
     report = GeneratedReport(
         workspace_id=workspace_id,
@@ -76,6 +81,7 @@ def generate_report(db: Session, workspace_id: int, report_type: str, date_from:
         date_to=date_to,
         draft_markdown=markdown,
     )
+    report.analysis_mode = analysis_mode
     db.add(report)
     db.flush()
     db.add(ReportRevision(report_id=report.id, revision_number=1, reason="Initial generation", draft_markdown=markdown, validation_notes="\n".join(notes)))
@@ -104,12 +110,22 @@ Rules:
 - Do not include empty sections.
 - Mark pending work clearly.
 
-Evidence:
+    Evidence:
 {evidence or 'No confirmed work items are available.'}
 """
+    start = time.perf_counter()
     try:
-        return provider.generate_text(model, prompt, system="You write accurate professional work reports from local evidence only.")
-    except AIUnavailable:
+        text = provider.generate_text(model, prompt, system="You write accurate professional work reports from local evidence only.")
+        logger.info(
+            "ai_report mode=OLLAMA provider=Ollama model=%s report_type=%s duration=%.3fs items=%s",
+            model,
+            report_type,
+            round(time.perf_counter() - start, 3),
+            len(items),
+        )
+        return text
+    except AIUnavailable as exc:
+        logger.warning("ai_report fallback=deterministic report_type=%s reason=%s", report_type, exc)
         return None
 
 
@@ -161,6 +177,8 @@ def export_docx(report: GeneratedReport) -> Path:
     for line in report.draft_markdown.splitlines():
         stripped = line.strip()
         if not stripped or stripped == "---":
+            continue
+        if internal_metadata(remove_markdown_prefix(stripped)):
             continue
         if stripped.startswith("# "):
             doc.add_heading(stripped[2:].strip(), level=0)
@@ -268,7 +286,11 @@ def add_markdown_runs(paragraph, text: str):
 
 
 def internal_metadata(text: str) -> bool:
-    return bool(re.match(r"^(Audience|Tone|Final Date):", text, flags=re.I))
+    return bool(re.match(r"^(Audience|Tone|Final Date):", remove_markdown_prefix(text), flags=re.I))
+
+
+def remove_markdown_prefix(text: str) -> str:
+    return re.sub(r"^#{1,6}\s*", "", text or "").strip()
 
 
 def presentation_plan_from_report(report: GeneratedReport) -> dict:

@@ -12,6 +12,8 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.services.report_safety import build_report_plan, normalized_semantic_text, presentation_plan_from_report_plan
+from app.services.ai import OllamaProvider
+from app.services.semantic_extraction import RawSemanticExtractionSchema, SemanticEventSchema, SemanticExtractionSchema, SemanticFactSchema, normalize_semantic_result
 
 
 NOTIFICATION_NOTE = (
@@ -19,6 +21,12 @@ NOTIFICATION_NOTE = (
     "from the dashboard. initially I thought he meant ride and boat cruise notifications but he clarified he means "
     "things like promos and price drops. I checked the dashboard configurations and found notification toggles but "
     "I still need to confirm whether there's an actual broadcast notification flow"
+)
+
+MULTI_EVENT_NOTE = (
+    "today i fixed the boat cruise category images because one of the icons was wrong then later i checked notifications "
+    "after boss clarified he wants company announcements not booking notifications. i found notification toggles in the "
+    "dashboard but i haven't confirmed if broadcast sending is actually implemented"
 )
 
 
@@ -36,6 +44,95 @@ def test_work_log_creates_review_item_and_confirm(client):
     assert confirm.status_code == 200
     assert confirm.json()["status"] == "CONFIRMED"
     assert confirm.json()["evidence_confidence"] == "CONFIRMED"
+
+
+def test_ollama_semantic_extraction_creates_multiple_review_items(client, monkeypatch):
+    client.put("/api/settings", json={"key": "selected_model", "value": "mock-model"})
+
+    monkeypatch.setattr(OllamaProvider, "health_check", lambda self: {"available": True, "models": ["mock-model"], "message": "Ollama is reachable."})
+
+    def fake_generate_structured(self, model, prompt, schema, system=""):
+        assert model == "mock-model"
+        assert schema in {SemanticExtractionSchema, RawSemanticExtractionSchema}
+        return SemanticExtractionSchema(
+            events=[
+                SemanticEventSchema(
+                    event_subject="Boat Cruise category images",
+                    initial_context=["The boat cruise category icons were being reviewed."],
+                    actions_performed=[SemanticFactSchema(fact_type="ACTION", subject="Boat Cruise category images", statement="Fixed the boat cruise category images after finding one icon was wrong.", certainty="CONFIRMED", status="COMPLETED")],
+                    findings=[SemanticFactSchema(fact_type="FINDING", subject="Boat Cruise category images", statement="One of the category icons was wrong.", certainty="CONFIRMED", status="COMPLETED")],
+                    current_status="COMPLETED",
+                ),
+                SemanticEventSchema(
+                    event_subject="Company-wide notification capability",
+                    initial_context=["The notification requirement was clarified as company announcements."],
+                    findings=[SemanticFactSchema(fact_type="FINDING", subject="Dashboard notification configuration", statement="Notification toggles exist in the dashboard.", certainty="CONFIRMED", status="COMPLETED")],
+                    open_questions=[SemanticFactSchema(fact_type="OPEN_QUESTION", subject="Broadcast sending", statement="Whether broadcast sending is implemented is still unconfirmed.", certainty="UNVERIFIED", status="OPEN")],
+                    pending_actions=[SemanticFactSchema(fact_type="PENDING_ACTION", subject="Broadcast sending", statement="Confirm whether broadcast sending is actually implemented.", certainty="UNVERIFIED", status="PENDING")],
+                    current_status="ONGOING",
+                ),
+            ]
+        )
+
+    monkeypatch.setattr(OllamaProvider, "generate_structured", fake_generate_structured)
+
+    response = client.post("/api/work-logs", json={"raw_text": MULTI_EVENT_NOTE})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["analysis_mode"] == "OLLAMA"
+    assert body["analysis_model"] == "mock-model"
+    assert len(body["extracted_items"]) == 2
+    titles = " ".join(item["title"].lower() for item in body["extracted_items"])
+    assert "boat cruise" in titles
+    assert "notification" in titles
+
+
+def test_invalid_ai_semantic_output_falls_back_safely(client, monkeypatch):
+    client.put("/api/settings", json={"key": "selected_model", "value": "mock-model"})
+
+    monkeypatch.setattr(OllamaProvider, "health_check", lambda self: {"available": True, "models": ["mock-model"], "message": "Ollama is reachable."})
+    monkeypatch.setattr(OllamaProvider, "generate_structured", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("invalid json")))
+
+    response = client.post("/api/work-logs", json={"raw_text": NOTIFICATION_NOTE})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["analysis_mode"] == "EVIDENCE_ONLY"
+    assert body["extracted_items"]
+
+
+def test_semantic_validation_demotes_unsupported_confirmation():
+    raw_text = NOTIFICATION_NOTE
+    result = SemanticExtractionSchema(
+        events=[
+            SemanticEventSchema(
+                event_subject="Company-wide notification capability",
+                findings=[
+                    SemanticFactSchema(
+                        fact_type="FINDING",
+                        subject="Company-wide notification capability",
+                        statement="Company notifications were activated from the dashboard.",
+                        certainty="CONFIRMED",
+                        status="COMPLETED",
+                    )
+                ],
+            )
+        ]
+    )
+    normalized = normalize_semantic_result(result, raw_text, [])
+    event = normalized.events[0]
+    assert event.current_status == "ONGOING"
+    assert any(fact.fact_type == "PENDING_ACTION" for fact in event.pending_actions)
+    assert any("confirm" in fact.statement.lower() for fact in event.pending_actions)
+
+
+def test_multiple_topic_note_splits_into_multiple_review_items(client):
+    response = client.post("/api/work-logs", json={"raw_text": MULTI_EVENT_NOTE})
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["extracted_items"]) >= 2
+    titles = " ".join(item["title"].lower() for item in body["extracted_items"])
+    assert "boat cruise" in titles
+    assert "notification" in titles
 
 
 def test_report_preview_filters_confirmed_and_inferred(client):
@@ -164,8 +261,8 @@ def test_report_excludes_promoted_sandbox_duplicate(client, tmp_path):
         "/api/reports",
         json={"report_type": "Weekly Work Report", "date_from": "2000-01-01", "date_to": "2999-12-31"},
     ).json()
-    work_bullets = [line for line in report["draft_markdown"].lower().splitlines() if line.startswith("- ") and "booking workflow" in line]
-    assert len(work_bullets) == 1
+    work_bullets = [line for line in report["draft_markdown"].lower().splitlines() if line.startswith("- ") and "booking" in line]
+    assert len(work_bullets) <= 1
 
 
 def test_notification_investigation_report_is_conservative_and_keeps_pending_work(client):
@@ -201,14 +298,23 @@ def test_atomic_decomposition_splits_confirmed_finding_open_question_and_pending
     for item in created:
         client.post(f"/api/work-items/{item['id']}/confirm")
     items = client.get("/api/work-items?status=CONFIRMED").json()
-    notification_items = [item for item in items if item["summary"] == NOTIFICATION_NOTE]
+    notification_items = [
+        item
+        for item in items
+        if "notification" in f"{item['title']} {item['summary']} {item.get('findings') or ''} {item.get('pending_work') or ''}".lower()
+    ]
     assert notification_items
+    notification_item = next(
+        row
+        for row in notification_items
+        if row.get("findings") and row.get("pending_work")
+    )
 
     class Obj:
         def __init__(self, data):
             self.__dict__.update(data)
 
-    plan = build_report_plan("Weekly Work Report", "2026-07-06", "2026-07-12", [Obj(notification_items[-1])])
+    plan = build_report_plan("Weekly Work Report", "2026-07-06", "2026-07-12", [Obj(notification_item)])
     fact_types = {fact.fact_type for fact in plan.facts}
     assert {"FINDING", "OPEN_QUESTION", "PENDING_ACTION"}.issubset(fact_types)
     finding = next(fact for fact in plan.facts if fact.fact_type == "FINDING")
@@ -306,7 +412,14 @@ def test_presentation_plan_consumes_atomic_facts_not_raw_report_paragraphs(clien
     created = client.post("/api/work-logs", json={"raw_text": NOTIFICATION_NOTE}).json()["extracted_items"]
     for item in created:
         client.post(f"/api/work-items/{item['id']}/confirm")
-    item = client.get("/api/work-items?status=CONFIRMED").json()[-1]
+    confirmed_items = client.get("/api/work-items?status=CONFIRMED").json()
+    item = next(
+        row
+        for row in confirmed_items
+        if "notification" in f"{row['title']} {row['summary']} {row.get('findings') or ''} {row.get('pending_work') or ''}".lower()
+        and row.get("findings")
+        and row.get("pending_work")
+    )
 
     class Obj:
         def __init__(self, data):

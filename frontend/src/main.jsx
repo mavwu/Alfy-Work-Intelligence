@@ -106,11 +106,14 @@ function Onboarding({ workspace, onDone }) {
   const [repoForm, setRepoForm] = useState({ name: '', local_path: '', role: 'USER_APP', promotes_to_repository_id: '' });
   const [files, setFiles] = useState([]);
   const [message, setMessage] = useState('');
+  const [testMessage, setTestMessage] = useState('');
 
   useEffect(() => {
     api('/api/ai/status').then((status) => {
       setAi(status);
-      if (status.models?.[0]) setSelectedModel(status.models[0]);
+      if (status.selected_model && status.models?.includes(status.selected_model)) {
+        setSelectedModel(status.selected_model);
+      }
     });
     api('/api/repositories').then(setRepos);
   }, []);
@@ -128,6 +131,19 @@ function Onboarding({ workspace, onDone }) {
       await api('/api/settings', { method: 'PUT', body: { key: 'selected_model', value: selectedModel } });
     }
     setStep(4);
+  }
+
+  async function refreshModels() {
+    const status = await api('/api/ai/status');
+    setAi(status);
+    if (status.selected_model && status.models?.includes(status.selected_model)) {
+      setSelectedModel(status.selected_model);
+    }
+  }
+
+  async function testConnection() {
+    const result = await api('/api/ai/test', { method: 'POST', body: { model: selectedModel } });
+    setTestMessage(result.available ? `Connection test succeeded with ${result.selected_model || selectedModel || 'Evidence Only Mode'}.` : result.message);
   }
 
   async function addRepo() {
@@ -182,13 +198,21 @@ function Onboarding({ workspace, onDone }) {
             <h1>AI Setup</h1>
             <StatusPill ok={ai.available} label={ai.available ? 'Ollama connected' : 'Evidence Only Mode available'} />
             <p>{ai.message}</p>
+            <p className="muted">Provider: Ollama</p>
+            <p className="muted">Selected model: {selectedModel || ai.selected_model || 'Evidence Only Mode'}</p>
+            <div className="row">
+              <button onClick={refreshModels}><RefreshCw size={16} />Refresh Models</button>
+              <button onClick={testConnection}><Bot size={16} />Test Connection</button>
+            </div>
             {ai.models?.length ? (
               <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)}>
+                <option value="">Evidence Only Mode</option>
                 {ai.models.map((model) => <option key={model}>{model}</option>)}
               </select>
             ) : (
               <p className="muted">You can still log work, scan repositories, search history, and generate deterministic drafts.</p>
             )}
+            {testMessage && <Notice>{testMessage}</Notice>}
             <button className="primary" onClick={saveModel}>Continue</button>
           </>
         )}
@@ -307,7 +331,7 @@ function WorkLog() {
     <Section title="Log Work" intro="Paste messy notes, a Codex summary, or a quick memory dump. The raw text is preserved exactly.">
       <textarea className="work-box" placeholder="What did you work on?" value={rawText} onChange={(event) => setRawText(event.target.value)} />
       <button className="primary" disabled={!rawText.trim()} onClick={submit}><Plus size={18} />Extract Work Items</button>
-      {result && <Notice>{result.extracted_items.length} review item(s) created from the saved raw log.</Notice>}
+      {result && <Notice>{result.extracted_items.length} review item(s) created via {result.analysis_mode}. {result.analysis_model ? `Model: ${result.analysis_model}.` : ''}</Notice>}
       <h2>Review Queue</h2>
       {items.length ? items.map((item) => <ReviewCard key={item.id} item={item} onSave={save} onConfirm={confirm} onIgnore={ignore} />) : <Empty text="No inferred work waiting for review." />}
     </Section>
@@ -448,7 +472,8 @@ function Imports() {
     const form = new FormData();
     [...files].forEach((file) => form.append('files', file));
     const result = await fetch(`${apiBase}/api/imports`, { method: 'POST', body: form }).then((r) => r.json());
-    setMessage(`Imported ${result.filter((item) => !item.duplicate).length} new file(s).`);
+    const firstAnalysis = result.find((item) => !item.duplicate)?.analysis_mode || 'EVIDENCE_ONLY';
+    setMessage(`Imported ${result.filter((item) => !item.duplicate).length} new file(s) via ${firstAnalysis}.`);
     setDocs(await api('/api/imports'));
   }
   return (
@@ -480,7 +505,7 @@ function Chat() {
     setMessage('');
     const response = await api('/api/chat', { method: 'POST', body: { message: text, conversation_id: conversationId } });
     setConversationId(response.conversation_id);
-    setMessages((current) => [...current, { role: 'assistant', content: response.answer, evidence: response.evidence_summary }]);
+    setMessages((current) => [...current, { role: 'assistant', content: response.answer, evidence: `${response.evidence_summary} (${response.analysis_mode})` }]);
   }
   return (
     <Section title="Chat" intro="Ask about your Ride Yanga work. Answers are grounded in local evidence.">
@@ -497,21 +522,38 @@ function Chat() {
 function SettingsPage() {
   const [status, setStatus] = useState(null);
   const [settings, setSettings] = useState({});
+  const [testMessage, setTestMessage] = useState('');
   useEffect(() => { api('/api/ai/status').then(setStatus); api('/api/settings').then((data) => setSettings(data.settings)); }, []);
   async function save(key, value) {
     setSettings({ ...settings, [key]: value });
     await api('/api/settings', { method: 'PUT', body: { key, value } });
+  }
+  async function refreshModels() {
+    setStatus(await api('/api/ai/status'));
+  }
+  async function testConnection() {
+    const result = await api('/api/ai/test', { method: 'POST', body: { model: settings.selected_model || status?.selected_model || '' } });
+    setTestMessage(result.available ? `Connection test succeeded with ${result.selected_model || settings.selected_model || 'Evidence Only Mode'}.` : result.message);
+    setStatus(await api('/api/ai/status'));
   }
   return (
     <Section title="Settings">
       <Panel title="AI Provider">
         <StatusPill ok={status?.available} label={status?.available ? 'Connected' : 'Unavailable'} />
         <p className="muted">{status?.message}</p>
+        <p className="muted">Provider: Ollama</p>
+        <p className="muted">Selected model: {settings.selected_model || status?.selected_model || 'Evidence Only Mode'}</p>
+        <div className="row">
+          <button onClick={refreshModels}><RefreshCw size={16} />Refresh Models</button>
+          <button onClick={testConnection}><Bot size={16} />Test Connection</button>
+        </div>
         <label>Selected Ollama model</label>
         <select value={settings.selected_model || ''} onChange={(e) => save('selected_model', e.target.value)}>
           <option value="">Evidence Only Mode</option>
           {status?.models?.map((model) => <option key={model}>{model}</option>)}
         </select>
+        {status?.models?.length ? <List items={status.models} /> : <p className="muted">No local Ollama models were discovered.</p>}
+        {testMessage && <Notice>{testMessage}</Notice>}
       </Panel>
       <Panel title="Git Ignore Patterns">
         <textarea value={settings.git_ignore_patterns || ''} onChange={(e) => save('git_ignore_patterns', e.target.value)} />

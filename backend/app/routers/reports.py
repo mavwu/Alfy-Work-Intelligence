@@ -134,6 +134,7 @@ def serialize_report(report: GeneratedReport):
         "draft_markdown": report.draft_markdown,
         "status": report.status,
         "use_as_style_reference": report.use_as_style_reference,
+        "analysis_mode": getattr(report, "analysis_mode", None),
         "created_at": report.created_at.isoformat(),
         "approved_at": report.approved_at.isoformat() if report.approved_at else None,
     }
