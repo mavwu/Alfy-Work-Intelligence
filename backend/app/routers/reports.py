@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from ..bootstrap import ensure_defaults
 from ..db import get_db
 from ..models import GeneratedReport, ReportRevision
-from ..services.reports import REPORT_TYPES, create_report_revision, evidence_for_period, export_docx, export_pptx, generate_report, restore_report_revision
+from ..services.reports import REPORT_TYPES, create_report_revision, evidence_for_period, export_docx, export_pptx, generate_report, report_items_for_revision, restore_report_revision
 
 router = APIRouter()
 
@@ -116,7 +116,7 @@ def download_pptx(report_id: int, db: Session = Depends(get_db)):
     report = db.get(GeneratedReport, report_id)
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
-    path = export_pptx(report)
+    path = export_pptx(report, report_items_for_revision(db, report))
     return FileResponse(path, filename=path.name)
 
 

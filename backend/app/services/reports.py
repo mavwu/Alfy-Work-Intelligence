@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from ..config import data_dir
 from ..models import AppSetting, Evidence, EvidenceRelationship, GeneratedReport, ReportRevision, ReportStyleProfile, WorkItem
 from .ai import AIUnavailable, OllamaProvider
-from .report_safety import build_report_plan, plan_to_markdown, refine_markdown, validate_and_rewrite
+from .report_safety import build_report_plan, plan_to_markdown, presentation_plan_from_report_plan, refine_markdown, validate_and_rewrite
 
 
 REPORT_TYPES = [
@@ -179,9 +179,13 @@ def export_docx(report: GeneratedReport) -> Path:
     return path
 
 
-def export_pptx(report: GeneratedReport) -> Path:
+def export_pptx(report: GeneratedReport, items: list[WorkItem] | None = None) -> Path:
     prs = Presentation()
-    plan = presentation_plan_from_report(report)
+    if items is not None:
+        report_plan = build_report_plan(report.report_type, report.date_from, report.date_to, items)
+        plan = presentation_plan_from_report_plan(report_plan)
+    else:
+        plan = presentation_plan_from_report(report)
     title_slide = prs.slides.add_slide(prs.slide_layouts[0])
     title_slide.shapes.title.text = plan["title"]
     title_slide.placeholders[1].text = plan["reporting_period"] if report.status == "APPROVED" else f"{plan['reporting_period']} - DRAFT"

@@ -1,10 +1,25 @@
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from docx import Document
 from pptx import Presentation
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+from app.services.report_safety import build_report_plan, normalized_semantic_text, presentation_plan_from_report_plan
+
+
+NOTIFICATION_NOTE = (
+    "okay so today I was checking push notifications because boss asked if we can activate company notifications "
+    "from the dashboard. initially I thought he meant ride and boat cruise notifications but he clarified he means "
+    "things like promos and price drops. I checked the dashboard configurations and found notification toggles but "
+    "I still need to confirm whether there's an actual broadcast notification flow"
+)
 
 
 def test_work_log_creates_review_item_and_confirm(client):
@@ -154,13 +169,7 @@ def test_report_excludes_promoted_sandbox_duplicate(client, tmp_path):
 
 
 def test_notification_investigation_report_is_conservative_and_keeps_pending_work(client):
-    note = (
-        "okay so today I was checking push notifications because boss asked if we can activate company notifications "
-        "from the dashboard. initially I thought he meant ride and boat cruise notifications but he clarified he means "
-        "things like promos and price drops. I checked the dashboard configurations and found notification toggles but "
-        "I still need to confirm whether there's an actual broadcast notification flow"
-    )
-    created = client.post("/api/work-logs", json={"raw_text": note}).json()["extracted_items"]
+    created = client.post("/api/work-logs", json={"raw_text": NOTIFICATION_NOTE}).json()["extracted_items"]
     for item in created:
         client.post(f"/api/work-items/{item['id']}/confirm")
 
@@ -181,9 +190,58 @@ def test_notification_investigation_report_is_conservative_and_keeps_pending_wor
         assert phrase not in draft
     assert "investigat" in draft
     assert "notification" in draft
-    assert "pending work" in draft
+    assert "open questions / pending work" in draft
     assert "confirm" in draft
     assert "broadcast" in draft
+    assert "okay so today" not in draft
+
+
+def test_atomic_decomposition_splits_confirmed_finding_open_question_and_pending_action(client):
+    created = client.post("/api/work-logs", json={"raw_text": NOTIFICATION_NOTE}).json()["extracted_items"]
+    for item in created:
+        client.post(f"/api/work-items/{item['id']}/confirm")
+    items = client.get("/api/work-items?status=CONFIRMED").json()
+    notification_items = [item for item in items if item["summary"] == NOTIFICATION_NOTE]
+    assert notification_items
+
+    class Obj:
+        def __init__(self, data):
+            self.__dict__.update(data)
+
+    plan = build_report_plan("Weekly Work Report", "2026-07-06", "2026-07-12", [Obj(notification_items[-1])])
+    fact_types = {fact.fact_type for fact in plan.facts}
+    assert {"FINDING", "OPEN_QUESTION", "PENDING_ACTION"}.issubset(fact_types)
+    finding = next(fact for fact in plan.facts if fact.fact_type == "FINDING")
+    open_question = next(fact for fact in plan.facts if fact.fact_type == "OPEN_QUESTION")
+    pending = next(fact for fact in plan.facts if fact.fact_type == "PENDING_ACTION")
+    assert "toggles" in finding.statement.lower()
+    assert finding.certainty == "CONFIRMED"
+    assert "has not yet been confirmed" in open_question.statement.lower()
+    assert pending.statement.lower().startswith("inspect") or pending.statement.lower().startswith("verify")
+
+
+def test_report_sections_are_professional_distinct_and_non_redundant(client):
+    created = client.post("/api/work-logs", json={"raw_text": NOTIFICATION_NOTE}).json()["extracted_items"]
+    for item in created:
+        client.post(f"/api/work-items/{item['id']}/confirm")
+    report = client.post(
+        "/api/reports",
+        json={"report_type": "Weekly Work Report", "date_from": "2026-07-06", "date_to": "2026-07-12"},
+    ).json()
+    draft = report["draft_markdown"]
+    lower = draft.lower()
+    assert "okay so today" not in lower
+    assert "notification-related configuration toggles were identified in the dashboard" in lower
+
+    findings = section_lines(draft, "Confirmed Findings")
+    pending = section_lines(draft, "Open Questions / Pending Work")
+    next_steps = section_lines(draft, "Next Steps")
+    assert findings
+    assert pending
+    assert next_steps
+    assert all(not any(word in line.lower() for word in ["need to confirm", "whether", "unconfirmed", "not yet"]) for line in findings)
+    assert normalized_semantic_text(pending[0]) != normalized_semantic_text(next_steps[0])
+    assert any(line.lower().startswith(("inspect", "verify")) for line in next_steps)
 
 
 def test_report_refinement_creates_revision_and_restore(client):
@@ -222,8 +280,9 @@ def test_docx_export_renders_markdown_without_literal_syntax(client, tmp_path):
 
 
 def test_pptx_export_uses_structured_slides_not_raw_report_dump(client, tmp_path):
-    item = client.post("/api/work-logs", json={"raw_text": "Investigated company notification toggles and still need to confirm broadcast flow."}).json()["extracted_items"][0]
-    client.post(f"/api/work-items/{item['id']}/confirm")
+    created = client.post("/api/work-logs", json={"raw_text": NOTIFICATION_NOTE}).json()["extracted_items"]
+    for item in created:
+        client.post(f"/api/work-items/{item['id']}/confirm")
     report = client.post(
         "/api/reports",
         json={"report_type": "Meeting Presentation", "date_from": "2000-01-01", "date_to": "2999-12-31"},
@@ -238,6 +297,27 @@ def test_pptx_export_uses_structured_slides_not_raw_report_dump(client, tmp_path
     assert "Audience" not in all_text
     assert "Tone" not in all_text
     assert "**" not in all_text
+    assert "okay so today" not in all_text.lower()
+    assert "Notification-related configuration toggles" in all_text
+    assert "has not yet been confirmed" in all_text
+
+
+def test_presentation_plan_consumes_atomic_facts_not_raw_report_paragraphs(client):
+    created = client.post("/api/work-logs", json={"raw_text": NOTIFICATION_NOTE}).json()["extracted_items"]
+    for item in created:
+        client.post(f"/api/work-items/{item['id']}/confirm")
+    item = client.get("/api/work-items?status=CONFIRMED").json()[-1]
+
+    class Obj:
+        def __init__(self, data):
+            self.__dict__.update(data)
+
+    plan = build_report_plan("Meeting Presentation", "2026-07-06", "2026-07-12", [Obj(item)])
+    presentation = presentation_plan_from_report_plan(plan)
+    bullets = "\n".join(bullet for slide in presentation["slides"] for bullet in slide["bullets"])
+    assert "okay so today" not in bullets.lower()
+    assert "Notification-related configuration toggles were identified in the dashboard." in bullets
+    assert "The existence and operation of a company-wide broadcast notification flow has not yet been confirmed." in bullets
 
 
 def make_repo(path: Path, message: str, file_path: str) -> Path:
@@ -251,3 +331,18 @@ def make_repo(path: Path, message: str, file_path: str) -> Path:
     subprocess.run(["git", "add", "."], cwd=path, check=True)
     subprocess.run(["git", "commit", "-m", message], cwd=path, check=True, capture_output=True)
     return path
+
+
+def section_lines(markdown: str, heading: str) -> list[str]:
+    lines = markdown.splitlines()
+    result = []
+    in_section = False
+    for line in lines:
+        if line == f"## {heading}":
+            in_section = True
+            continue
+        if in_section and line.startswith("## "):
+            break
+        if in_section and line.startswith("- "):
+            result.append(line[2:])
+    return result
