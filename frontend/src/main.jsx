@@ -87,7 +87,7 @@ function App() {
         </button>
       </aside>
       <main className="main">
-        <Page refreshKey={refreshKey} refresh={() => setRefreshKey((v) => v + 1)} />
+        <Page workspace={workspace} setWorkspace={setWorkspace} refreshKey={refreshKey} refresh={() => setRefreshKey((v) => v + 1)} />
       </main>
     </div>
   );
@@ -100,6 +100,9 @@ function ShellLoading() {
 function Onboarding({ workspace, onDone }) {
   const [step, setStep] = useState(1);
   const [name, setName] = useState(workspace?.name || 'Ride Yanga');
+  const [displayName, setDisplayName] = useState(workspace?.user_name || 'Alfy');
+  const [roleTitle, setRoleTitle] = useState('');
+  const [reportAudience, setReportAudience] = useState('');
   const [ai, setAi] = useState({ available: false, models: [], message: 'Checking Ollama...' });
   const [selectedModel, setSelectedModel] = useState('');
   const [repos, setRepos] = useState([]);
@@ -116,12 +119,17 @@ function Onboarding({ workspace, onDone }) {
       }
     });
     api('/api/repositories').then(setRepos);
+    api('/api/settings').then((data) => {
+      setRoleTitle(data.settings?.profile_role_title || '');
+      setReportAudience(data.settings?.default_report_audience || data.style_profile?.audience || '');
+      setDisplayName(data.settings?.profile_display_name || workspace?.user_name || 'Alfy');
+    });
   }, []);
 
   async function saveWorkspace(done = false) {
     const next = await api('/api/workspaces/default', {
       method: 'PUT',
-      body: { name, user_name: 'Alfy', onboarding_complete: done },
+      body: { name, user_name: displayName, role_title: roleTitle, report_audience: reportAudience, onboarding_complete: done },
     });
     return next;
   }
@@ -181,15 +189,21 @@ function Onboarding({ workspace, onDone }) {
         {step === 1 && (
           <>
             <h1>Welcome to Alfy Work Intelligence</h1>
-            <p>A local-first timeline for engineering work, Git evidence, reports, and grounded Ride Yanga updates.</p>
+            <p>A local-first workspace for recording work, reviewing extracted work items, preserving evidence, searching history, and generating grounded reports.</p>
             <button className="primary" onClick={() => setStep(2)}>Start</button>
           </>
         )}
         {step === 2 && (
           <>
             <h1>Create Workspace</h1>
+            <label>Display name</label>
+            <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+            <label>Role title</label>
+            <input placeholder="Optional" value={roleTitle} onChange={(event) => setRoleTitle(event.target.value)} />
             <label>Workspace name</label>
             <input value={name} onChange={(event) => setName(event.target.value)} />
+            <label>Default report audience</label>
+            <input placeholder="Stakeholder, supervisor, client, management..." value={reportAudience} onChange={(event) => setReportAudience(event.target.value)} />
             <button className="primary" onClick={async () => { await saveWorkspace(); setStep(3); }}>Continue</button>
           </>
         )}
@@ -218,7 +232,8 @@ function Onboarding({ workspace, onDone }) {
         )}
         {step === 4 && (
           <>
-            <h1>Register Repositories</h1>
+            <h1>Register Git Repositories</h1>
+            <p className="muted">Optional developer evidence. You can skip this and still log work, import documents, search history, and generate reports.</p>
             <div className="form-grid">
               <input placeholder="Display name" value={repoForm.name} onChange={(e) => setRepoForm({ ...repoForm, name: e.target.value })} />
               <input placeholder="Local path" value={repoForm.local_path} onChange={(e) => setRepoForm({ ...repoForm, local_path: e.target.value })} />
@@ -241,7 +256,7 @@ function Onboarding({ workspace, onDone }) {
         {step === 5 && (
           <>
             <h1>Historical Import</h1>
-            <p>Import April, May, June, or later reports and summaries. Supported: DOCX, PDF, Markdown, TXT.</p>
+            <p>Import previous reports, work notes, project documents, or summaries. Supported: DOCX, PDF, Markdown, TXT.</p>
             <input type="file" multiple accept=".docx,.pdf,.md,.txt" onChange={(event) => setFiles(event.target.files)} />
             <button className="primary" onClick={uploadHistory}>Continue</button>
           </>
@@ -269,15 +284,15 @@ function Dashboard() {
       <h1>{greeting}, {data.greeting_name}</h1>
       <div className="metric-grid">
         <Metric label="Work Days Logged" value={data.this_week.work_days_logged} />
-        <Metric label="Git Commits" value={data.this_week.git_commits} />
+        <Metric label="Developer Evidence" value={data.this_week.git_commits} />
         <Metric label="Areas Worked On" value={data.this_week.areas_worked_on.length} />
         <Metric label="Confirmed Work Items" value={data.this_week.confirmed_work_items} />
       </div>
       <div className="content-grid">
-        <Panel title="Major Focus">
-          <Metric label="Bugs Resolved" value={data.this_week.bugs_resolved} compact />
-          <Metric label="Investigations" value={data.this_week.investigations} compact />
-          <Metric label="Features Worked On" value={data.this_week.features_worked_on} compact />
+        <Panel title="Work Focus">
+          <Metric label="Issues Resolved" value={data.this_week.bugs_resolved} compact />
+          <Metric label="Investigations / Research" value={data.this_week.investigations} compact />
+          <Metric label="Deliverables / Features" value={data.this_week.features_worked_on} compact />
           <Metric label="Pending Items" value={data.this_week.pending_items} compact />
         </Panel>
         <Panel title="Report Status">
@@ -292,7 +307,7 @@ function Dashboard() {
         <Panel title="AI Insight">
           <p>{data.ai_insight || 'No evidence-backed insight is available yet.'}</p>
         </Panel>
-        <Panel title="Repository Scan Health">
+        <Panel title="Developer Evidence Health">
           {data.repository_health.length ? data.repository_health.map((repo) => (
             <div className="row" key={repo.id}>
               <span>{repo.name}</span>
@@ -477,7 +492,7 @@ function Imports() {
     setDocs(await api('/api/imports'));
   }
   return (
-    <Section title="Imports" intro="Import historical Ride Yanga reports and summaries for local extraction and search.">
+    <Section title="Imports" intro="Import historical work documents, previous reports, work notes, or project documents for local extraction and search.">
       <input type="file" multiple accept=".docx,.pdf,.md,.txt" onChange={(e) => setFiles(e.target.files)} />
       <button className="primary" disabled={!files.length} onClick={upload}><Import size={16} />Import Files</button>
       {message && <Notice>{message}</Notice>}
@@ -494,11 +509,18 @@ function Imports() {
   );
 }
 
-function Chat() {
+function Chat({ workspace }) {
   const [message, setMessage] = useState('');
   const [conversationId, setConversationId] = useState(null);
   const [messages, setMessages] = useState([]);
-  const suggestions = ['What did I do this week?', 'Give me an update for my boss.', 'What bugs did I fix this month?', 'What Ride Yanga achievements could support my CV?'];
+  const workspaceName = workspace?.name || 'this workspace';
+  const suggestions = [
+    'What work did I complete this week?',
+    `Summarise my work for ${workspaceName}.`,
+    'What issues did I resolve this month?',
+    'Create CV evidence from my confirmed work.',
+    'What remains pending?',
+  ];
   async function send(text = message) {
     if (!text.trim()) return;
     setMessages([...messages, { role: 'user', content: text }]);
@@ -508,22 +530,39 @@ function Chat() {
     setMessages((current) => [...current, { role: 'assistant', content: response.answer, evidence: `${response.evidence_summary} (${response.analysis_mode})` }]);
   }
   return (
-    <Section title="Chat" intro="Ask about your Ride Yanga work. Answers are grounded in local evidence.">
+    <Section title="Chat" intro={`Ask about work in ${workspaceName}. Answers are grounded in local evidence.`}>
       {!messages.length && <div className="suggestions">{suggestions.map((s) => <button key={s} onClick={() => send(s)}>{s}</button>)}</div>}
       <div className="chat-log">{messages.map((m, i) => <div key={i} className={`message ${m.role}`}><p>{m.content}</p>{m.evidence && <small>{m.evidence}</small>}</div>)}</div>
       <div className="chat-input">
-        <input placeholder="Ask about your Ride Yanga work" value={message} onChange={(e) => setMessage(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()} />
+        <input placeholder={`Ask about ${workspaceName}`} value={message} onChange={(e) => setMessage(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()} />
         <button className="primary" onClick={() => send()}><Bot size={16} />Send</button>
       </div>
     </Section>
   );
 }
 
-function SettingsPage() {
+function SettingsPage({ workspace, setWorkspace }) {
   const [status, setStatus] = useState(null);
   const [settings, setSettings] = useState({});
+  const [workspaceForm, setWorkspaceForm] = useState({
+    name: workspace?.name || '',
+    user_name: workspace?.user_name || '',
+    role_title: '',
+    report_audience: '',
+  });
   const [testMessage, setTestMessage] = useState('');
-  useEffect(() => { api('/api/ai/status').then(setStatus); api('/api/settings').then((data) => setSettings(data.settings)); }, []);
+  useEffect(() => {
+    api('/api/ai/status').then(setStatus);
+    api('/api/settings').then((data) => {
+      setSettings(data.settings);
+      setWorkspaceForm({
+        name: workspace?.name || '',
+        user_name: data.settings?.profile_display_name || workspace?.user_name || '',
+        role_title: data.settings?.profile_role_title || '',
+        report_audience: data.settings?.default_report_audience || data.style_profile?.audience || '',
+      });
+    });
+  }, [workspace]);
   async function save(key, value) {
     setSettings({ ...settings, [key]: value });
     await api('/api/settings', { method: 'PUT', body: { key, value } });
@@ -536,8 +575,29 @@ function SettingsPage() {
     setTestMessage(result.available ? `Connection test succeeded with ${result.selected_model || settings.selected_model || 'Evidence Only Mode'}.` : result.message);
     setStatus(await api('/api/ai/status'));
   }
+  async function saveWorkspaceProfile() {
+    const next = await api('/api/workspaces/default', { method: 'PUT', body: workspaceForm });
+    setWorkspace(next);
+    setSettings({
+      ...settings,
+      profile_display_name: workspaceForm.user_name,
+      profile_role_title: workspaceForm.role_title,
+      default_report_audience: workspaceForm.report_audience,
+    });
+  }
   return (
     <Section title="Settings">
+      <Panel title="Profile and Workspace">
+        <label>Display name</label>
+        <input value={workspaceForm.user_name} onChange={(e) => setWorkspaceForm({ ...workspaceForm, user_name: e.target.value })} />
+        <label>Role title</label>
+        <input placeholder="Optional" value={workspaceForm.role_title} onChange={(e) => setWorkspaceForm({ ...workspaceForm, role_title: e.target.value })} />
+        <label>Workspace name</label>
+        <input value={workspaceForm.name} onChange={(e) => setWorkspaceForm({ ...workspaceForm, name: e.target.value })} />
+        <label>Default report audience</label>
+        <input placeholder="Stakeholder, supervisor, client, management..." value={workspaceForm.report_audience} onChange={(e) => setWorkspaceForm({ ...workspaceForm, report_audience: e.target.value })} />
+        <button className="primary" onClick={saveWorkspaceProfile}>Save Profile</button>
+      </Panel>
       <Panel title="AI Provider">
         <StatusPill ok={status?.available} label={status?.available ? 'Connected' : 'Unavailable'} />
         <p className="muted">{status?.message}</p>
@@ -559,7 +619,7 @@ function SettingsPage() {
         <textarea value={settings.git_ignore_patterns || ''} onChange={(e) => save('git_ignore_patterns', e.target.value)} />
       </Panel>
       <Panel title="Data Location">
-        <p className="muted">SQLite data is stored under the configured ALFY_DATA_DIR, defaulting to your Windows user profile.</p>
+        <p className="muted">SQLite data is stored under the configured ALFY_DATA_DIR, defaulting to your local user profile.</p>
       </Panel>
     </Section>
   );

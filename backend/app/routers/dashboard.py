@@ -30,7 +30,11 @@ def dashboard(db: Session = Depends(get_db)):
     if repo_ids:
         commits = db.query(GitCommit).filter(GitCommit.repository_id.in_(repo_ids), GitCommit.commit_date >= datetime.combine(week_start, datetime.min.time())).count()
     areas = sorted({item.area for item in items if item.area})
-    types = {kind: sum(1 for item in items if (item.work_type or "").lower().startswith(kind.lower())) for kind in ["Bug", "Technical", "Feature"]}
+    types = {
+        "issues": sum(1 for item in items if legacy_or_generic_type(item.work_type, ["bug", "issue"])),
+        "investigations": sum(1 for item in items if legacy_or_generic_type(item.work_type, ["technical", "investigation", "research"])),
+        "deliverables": sum(1 for item in items if legacy_or_generic_type(item.work_type, ["feature", "deliverable"])),
+    }
     return {
         "greeting_name": workspace.user_name,
         "this_week": {
@@ -38,9 +42,9 @@ def dashboard(db: Session = Depends(get_db)):
             "git_commits": commits,
             "areas_worked_on": areas,
             "confirmed_work_items": sum(1 for item in items if item.status == "CONFIRMED"),
-            "bugs_resolved": types["Bug"],
-            "investigations": types["Technical"],
-            "features_worked_on": types["Feature"],
+            "bugs_resolved": types["issues"],
+            "investigations": types["investigations"],
+            "features_worked_on": types["deliverables"],
             "pending_items": sum(1 for item in items if item.pending_work),
         },
         "recent_work": [
@@ -72,3 +76,8 @@ def make_insight(items: list[WorkItem]) -> str | None:
     if top[1] < 2:
         return None
     return f"Most recorded activity this week is concentrated around {top[0]}."
+
+
+def legacy_or_generic_type(value: str | None, needles: list[str]) -> bool:
+    lower = (value or "").lower()
+    return any(needle in lower for needle in needles)

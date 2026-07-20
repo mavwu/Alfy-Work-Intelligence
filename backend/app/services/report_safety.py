@@ -50,9 +50,13 @@ class ReportPlan:
         return any(fact.fact_type in {"OPEN_QUESTION", "PENDING_ACTION"} for fact in self.facts)
 
 
-UNSAFE_PATTERNS = [
+LEGACY_NOTIFICATION_UNSAFE_PATTERNS = [
     r"\b(company notifications?|broadcast notifications?)\s+(?:were|was)\s+(?:activated|implemented|confirmed|completed|resolved)\b",
     r"\bconfirmed that .*activate company notifications\b",
+]
+
+UNSAFE_PATTERNS = [
+    *LEGACY_NOTIFICATION_UNSAFE_PATTERNS,
     r"\bno pending work\b",
     r"\bthere is no pending work\b",
     r"\bmarketing initiatives?\b",
@@ -227,7 +231,7 @@ def executive_summary(plan: ReportPlan) -> str:
     if open_count:
         finding_word = "observation" if finding_count == 1 else "observations"
         question_word = "question" if open_count == 1 else "questions"
-        return f"Investigated {focus}; {finding_count or 'some'} confirmed {finding_word} and {open_count} open technical {question_word} require follow-up."
+        return f"Investigated {focus}; {finding_count or 'some'} confirmed {finding_word} and {open_count} open {question_word} require follow-up."
     return f"Work during this period focused on {focus}. The summary below is limited to confirmed evidence from the selected reporting period."
 
 

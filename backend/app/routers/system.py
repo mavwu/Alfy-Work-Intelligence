@@ -11,8 +11,10 @@ router = APIRouter()
 
 
 class WorkspaceUpdate(BaseModel):
-    name: str
-    user_name: str = "Alfy"
+    name: str | None = None
+    user_name: str | None = None
+    role_title: str | None = None
+    report_audience: str | None = None
     onboarding_complete: bool | None = None
 
 
@@ -30,8 +32,19 @@ def default_workspace(db: Session = Depends(get_db)):
 @router.put("/workspaces/default")
 def update_workspace(payload: WorkspaceUpdate, db: Session = Depends(get_db)):
     workspace = ensure_defaults(db)
-    workspace.name = payload.name.strip() or workspace.name
-    workspace.user_name = payload.user_name.strip() or workspace.user_name
+    if payload.name is not None:
+        workspace.name = payload.name.strip() or workspace.name
+    if payload.user_name is not None:
+        workspace.user_name = payload.user_name.strip() or workspace.user_name
+        upsert_setting(db, "profile_display_name", workspace.user_name)
+    if payload.role_title is not None:
+        upsert_setting(db, "profile_role_title", payload.role_title.strip())
+    if payload.report_audience is not None:
+        profile = db.query(ReportStyleProfile).filter(ReportStyleProfile.workspace_id == workspace.id).first()
+        if not profile:
+            profile = ReportStyleProfile(workspace_id=workspace.id)
+            db.add(profile)
+        profile.audience = payload.report_audience.strip() or profile.audience
     if payload.onboarding_complete is not None:
         workspace.onboarding_complete = payload.onboarding_complete
     db.commit()
@@ -74,17 +87,27 @@ def get_settings(db: Session = Depends(get_db)):
     workspace = ensure_defaults(db)
     settings = {row.key: row.value for row in db.query(AppSetting).all()}
     profile = db.query(ReportStyleProfile).filter(ReportStyleProfile.workspace_id == workspace.id).first()
-    return {"settings": settings, "style_profile": profile.__dict__ if profile else None}
+    if profile:
+        settings.setdefault("default_report_audience", profile.audience)
+    return {
+        "settings": settings,
+        "style_profile": serialize_style_profile(profile) if profile else None,
+    }
 
 
 @router.put("/settings")
 def update_setting(payload: SettingUpdate, db: Session = Depends(get_db)):
-    setting = db.get(AppSetting, payload.key)
-    if not setting:
-        setting = AppSetting(key=payload.key, value=payload.value)
-        db.add(setting)
-    else:
-        setting.value = payload.value
+    setting = upsert_setting(db, payload.key, payload.value)
+    if payload.key == "profile_display_name":
+        workspace = ensure_defaults(db)
+        workspace.user_name = payload.value.strip() or workspace.user_name
+    elif payload.key == "default_report_audience":
+        workspace = ensure_defaults(db)
+        profile = db.query(ReportStyleProfile).filter(ReportStyleProfile.workspace_id == workspace.id).first()
+        if not profile:
+            profile = ReportStyleProfile(workspace_id=workspace.id)
+            db.add(profile)
+        profile.audience = payload.value.strip() or profile.audience
     db.commit()
     return {"ok": True}
 
@@ -97,3 +120,25 @@ def serialize_workspace(workspace: Workspace):
         "onboarding_complete": workspace.onboarding_complete,
         "created_at": workspace.created_at.isoformat(),
     }
+
+
+def serialize_style_profile(profile: ReportStyleProfile):
+    return {
+        "id": profile.id,
+        "workspace_id": profile.workspace_id,
+        "audience": profile.audience,
+        "tone": profile.tone,
+        "technical_depth": profile.technical_depth,
+        "notes": profile.notes,
+        "updated_at": profile.updated_at.isoformat(),
+    }
+
+
+def upsert_setting(db: Session, key: str, value: str) -> AppSetting:
+    setting = db.get(AppSetting, key)
+    if not setting:
+        setting = AppSetting(key=key, value=value)
+        db.add(setting)
+    else:
+        setting.value = value
+    return setting

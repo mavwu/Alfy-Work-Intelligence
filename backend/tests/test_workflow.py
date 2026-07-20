@@ -46,6 +46,117 @@ def test_work_log_creates_review_item_and_confirm(client):
     assert confirm.json()["evidence_confidence"] == "CONFIRMED"
 
 
+def test_default_workspace_is_preserved_and_startup_is_idempotent(client):
+    first = client.get("/api/workspaces/default").json()
+    second = client.get("/api/workspaces/default").json()
+    assert first["id"] == second["id"]
+    assert first["name"] == "Ride Yanga"
+
+    from app.bootstrap import ensure_defaults
+    from app.db import SessionLocal
+    from app.models import Workspace
+
+    db = SessionLocal()
+    try:
+        ensure_defaults(db)
+        ensure_defaults(db)
+        rows = db.query(Workspace).all()
+        assert len(rows) == 1
+        assert rows[0].name == "Ride Yanga"
+    finally:
+        db.close()
+
+
+def test_workspace_rename_does_not_create_duplicate_default_workspace(client):
+    client.put("/api/workspaces/default", json={"name": "Freelance Work", "user_name": "Alfy"})
+    assert client.get("/api/workspaces/default").json()["name"] == "Freelance Work"
+
+    from app.bootstrap import ensure_defaults
+    from app.db import SessionLocal
+    from app.models import Workspace
+
+    db = SessionLocal()
+    try:
+        ensure_defaults(db)
+        rows = db.query(Workspace).all()
+        assert len(rows) == 1
+        assert rows[0].name == "Freelance Work"
+    finally:
+        db.close()
+
+
+def test_user_display_name_and_report_audience_are_configurable(client):
+    response = client.put(
+        "/api/workspaces/default",
+        json={
+            "name": "Freelance Work",
+            "user_name": "Miriam",
+            "role_title": "Designer",
+            "report_audience": "Client",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["user_name"] == "Miriam"
+
+    settings = client.get("/api/settings").json()
+    assert settings["settings"]["profile_display_name"] == "Miriam"
+    assert settings["settings"]["profile_role_title"] == "Designer"
+    assert settings["settings"]["default_report_audience"] == "Client"
+    assert settings["style_profile"]["audience"] == "Client"
+
+
+def test_report_prompt_uses_selected_workspace_and_audience(client, monkeypatch):
+    client.put(
+        "/api/workspaces/default",
+        json={"name": "Freelance Work", "user_name": "Alfy", "report_audience": "Client"},
+    )
+    client.put("/api/settings", json={"key": "selected_model", "value": "mock-model"})
+    created = client.post(
+        "/api/work-logs",
+        json={"raw_text": "Met the client, reviewed the draft poster, recorded wording changes, and sent the revised design for approval."},
+    ).json()["extracted_items"][0]
+    client.post(f"/api/work-items/{created['id']}/confirm")
+
+    captured = {}
+    monkeypatch.setattr(OllamaProvider, "health_check", lambda self: {"available": True, "models": ["mock-model"], "message": "Ollama is reachable."})
+
+    def fake_generate_text(self, model, prompt, system="", options=None):
+        captured["prompt"] = prompt
+        return "# Weekly Work Report\n\nReport for Freelance Work.\n"
+
+    monkeypatch.setattr(OllamaProvider, "generate_text", fake_generate_text)
+
+    report = client.post(
+        "/api/reports",
+        json={"report_type": "Weekly Work Report", "date_from": "2000-01-01", "date_to": "2999-12-31"},
+    )
+    assert report.status_code == 200
+    assert "Freelance Work" in captured["prompt"]
+    assert "Audience: Client" in captured["prompt"]
+    assert "Ride Yanga" not in captured["prompt"]
+    assert "CTO" not in captured["prompt"]
+
+
+def test_generic_report_labels_keep_legacy_report_types_usable(client):
+    report_types = client.get("/api/reports/types").json()
+    assert "Monthly Work Summary" in report_types
+    assert "Stakeholder Update" in report_types
+    assert "Monthly Engineering Summary" not in report_types
+    assert "Boss Progress Update" not in report_types
+
+    created = client.post("/api/work-logs", json={"raw_text": "Prepared a weekly work summary."}).json()["extracted_items"][0]
+    client.post(f"/api/work-items/{created['id']}/confirm")
+    report = client.post(
+        "/api/reports",
+        json={"report_type": "Monthly Engineering Summary", "date_from": "2000-01-01", "date_to": "2999-12-31"},
+    )
+    assert report.status_code == 200
+    body = report.json()
+    assert body["report_type"] == "Monthly Engineering Summary"
+    assert body["title"].startswith("Monthly Work Summary")
+    assert any(row["report_type"] == "Monthly Engineering Summary" for row in client.get("/api/reports").json())
+
+
 def test_ollama_semantic_extraction_creates_multiple_review_items(client, monkeypatch):
     client.put("/api/settings", json={"key": "selected_model", "value": "mock-model"})
 
@@ -329,6 +440,7 @@ def test_atomic_decomposition_splits_confirmed_finding_open_question_and_pending
 def test_report_sections_are_professional_distinct_and_non_redundant(client):
     created = client.post("/api/work-logs", json={"raw_text": NOTIFICATION_NOTE}).json()["extracted_items"]
     for item in created:
+        client.put(f"/api/work-items/{item['id']}", json={"work_date": "2026-07-08"})
         client.post(f"/api/work-items/{item['id']}/confirm")
     report = client.post(
         "/api/reports",

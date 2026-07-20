@@ -12,6 +12,11 @@ except Exception:
 APP_NAME = "Alfy Work Intelligence"
 DEFAULT_WORKSPACE_NAME = "Ride Yanga"
 DEFAULT_USER_NAME = "Alfy"
+DEFAULT_PROFILE_ROLE_TITLE = ""
+DEFAULT_PROFILE_TIMEZONE = ""
+DEFAULT_REPORT_SIGNATURE = ""
+DEFAULT_REPORT_AUDIENCE = "Stakeholder"
+RIDE_YANGA_REPORT_AUDIENCE = "CTO / Management"
 
 
 def data_dir() -> Path:

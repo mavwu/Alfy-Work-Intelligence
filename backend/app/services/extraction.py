@@ -115,7 +115,7 @@ def event_to_work_item(event: SemanticEventSchema, raw_text: str, analysis_mode:
 
 def fallback_event_from_text(raw_text: str) -> SemanticEventSchema:
     semantic_result = deterministic_semantic_analysis(raw_text)
-    return semantic_result.events[0] if semantic_result.events else SemanticEventSchema(event_subject="General engineering work")
+    return semantic_result.events[0] if semantic_result.events else SemanticEventSchema(event_subject="General work")
 
 
 def infer_title_from_event(event: SemanticEventSchema, summary: str) -> str:
@@ -183,16 +183,16 @@ def infer_area(lower: str) -> str:
     for needle, area in areas.items():
         if needle in lower:
             return area
-    return "General Engineering"
+    return "General Work"
 
 
 def infer_work_type(lower: str, event: SemanticEventSchema | None = None) -> str:
     if event and (event.pending_actions or event.open_questions):
-        return "Technical Investigation"
+        return "Investigation"
     if any(word in lower for word in ["bug", "fixed", "resolved", "issue", "error"]):
-        return "Bug Fix"
+        return "Issue Resolution"
     if any(word in lower for word in ["implemented", "added", "built", "created", "changed", "updated"]):
-        return "Feature Work"
+        return "Deliverable Work"
     if any(word in lower for word in ["investigat", "checked", "found", "confirmed", "inspected"]):
-        return "Technical Investigation"
+        return "Investigation"
     return "Work Log"

@@ -9,8 +9,8 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 from sqlalchemy.orm import Session
 
-from ..config import data_dir
-from ..models import AppSetting, Evidence, EvidenceRelationship, GeneratedReport, ReportRevision, ReportStyleProfile, WorkItem
+from ..config import DEFAULT_REPORT_AUDIENCE, data_dir
+from ..models import AppSetting, Evidence, EvidenceRelationship, GeneratedReport, ReportRevision, ReportStyleProfile, WorkItem, Workspace
 from .ai import AIUnavailable, OllamaProvider
 from .report_safety import build_report_plan, plan_to_markdown, presentation_plan_from_report_plan, refine_markdown, validate_and_rewrite
 
@@ -20,16 +20,25 @@ logger = logging.getLogger(__name__)
 REPORT_TYPES = [
     "Daily Work Summary",
     "Weekly Work Report",
-    "Monthly Engineering Summary",
-    "Boss Progress Update",
-    "Bug and Resolution Report",
-    "Technical Investigation Report",
+    "Monthly Work Summary",
+    "Stakeholder Update",
+    "Issue and Resolution Report",
+    "Investigation Report",
     "Project Progress Report",
     "Meeting Brief",
     "Handover Document",
     "CV Achievement Extraction",
     "Meeting Presentation",
 ]
+
+LEGACY_REPORT_TYPE_ALIASES = {
+    "Monthly Engineering Summary": "Monthly Work Summary",
+    "Boss Progress Update": "Stakeholder Update",
+    "Bug and Resolution Report": "Issue and Resolution Report",
+    "Technical Investigation Report": "Investigation Report",
+}
+
+ACCEPTED_REPORT_TYPES = set(REPORT_TYPES) | set(LEGACY_REPORT_TYPE_ALIASES)
 
 
 def evidence_for_period(db: Session, workspace_id: int, date_from: str, date_to: str):
@@ -64,19 +73,22 @@ def promoted_work_item_ids(db: Session) -> set[int]:
 
 
 def generate_report(db: Session, workspace_id: int, report_type: str, date_from: str, date_to: str, include_inferred_ids: list[int] | None = None) -> GeneratedReport:
+    workspace = db.get(Workspace, workspace_id)
+    workspace_name = workspace.name if workspace else "Current Workspace"
     confirmed, _ = evidence_for_period(db, workspace_id, date_from, date_to)
     included = list(confirmed)
     if include_inferred_ids:
         included.extend(db.query(WorkItem).filter(WorkItem.id.in_(include_inferred_ids), WorkItem.workspace_id == workspace_id).all())
     profile = db.query(ReportStyleProfile).filter(ReportStyleProfile.workspace_id == workspace_id).first()
-    plan = build_report_plan(report_type, date_from, date_to, included)
-    generated = ai_report(db, report_type, date_from, date_to, included, profile) if included else None
+    display_type = report_type_label(report_type)
+    plan = build_report_plan(display_type, date_from, date_to, included)
+    generated = ai_report(db, display_type, date_from, date_to, included, profile, workspace_name) if included else None
     analysis_mode = "OLLAMA" if generated else "EVIDENCE_ONLY"
-    markdown, notes = validate_and_rewrite(generated or deterministic_report(report_type, date_from, date_to, included, profile), plan)
+    markdown, notes = validate_and_rewrite(generated or deterministic_report(display_type, date_from, date_to, included, profile, workspace_name), plan)
     report = GeneratedReport(
         workspace_id=workspace_id,
         report_type=report_type,
-        title=f"{report_type} - {date_from} to {date_to}",
+        title=f"{display_type} - {date_from} to {date_to}",
         date_from=date_from,
         date_to=date_to,
         draft_markdown=markdown,
@@ -90,7 +102,15 @@ def generate_report(db: Session, workspace_id: int, report_type: str, date_from:
     return report
 
 
-def ai_report(db: Session, report_type: str, date_from: str, date_to: str, items: list[WorkItem], profile: ReportStyleProfile | None) -> str | None:
+def ai_report(
+    db: Session,
+    report_type: str,
+    date_from: str,
+    date_to: str,
+    items: list[WorkItem],
+    profile: ReportStyleProfile | None,
+    workspace_name: str,
+) -> str | None:
     model_setting = db.get(AppSetting, "selected_model")
     model = model_setting.value if model_setting else ""
     if not model:
@@ -99,10 +119,11 @@ def ai_report(db: Session, report_type: str, date_from: str, date_to: str, items
     if not provider.health_check().get("available"):
         return None
     evidence = "\n".join(f"- {item.work_date}: {item.title} ({item.work_type}) - {item.summary}" for item in items)
+    audience = profile.audience if profile and profile.audience else DEFAULT_REPORT_AUDIENCE
     prompt = f"""
-Create a grounded {report_type} for Ride Yanga.
+Create a grounded {report_type} for the workspace named {workspace_name}.
 Period: {date_from} to {date_to}
-Audience: {profile.audience if profile else 'CTO / Management'}
+Audience: {audience}
 Tone: {profile.tone if profile else 'Professional'}
 Rules:
 - Use only the evidence below.
@@ -129,20 +150,27 @@ Rules:
         return None
 
 
-def deterministic_report(report_type: str, date_from: str, date_to: str, items: list[WorkItem], profile: ReportStyleProfile | None) -> str:
+def deterministic_report(
+    report_type: str,
+    date_from: str,
+    date_to: str,
+    items: list[WorkItem],
+    profile: ReportStyleProfile | None,
+    workspace_name: str,
+) -> str:
     plan = build_report_plan(report_type, date_from, date_to, items)
-    if report_type == "Boss Progress Update":
-        return deterministic_boss_update(date_from, date_to, items)
+    if report_type == "Stakeholder Update":
+        return deterministic_stakeholder_update(date_from, date_to, items, workspace_name)
     if report_type == "CV Achievement Extraction":
-        return deterministic_cv_achievements(date_from, date_to, items)
+        return deterministic_cv_achievements(date_from, date_to, items, workspace_name)
     return plan_to_markdown(plan)
 
 
-def deterministic_boss_update(date_from: str, date_to: str, items: list[WorkItem]) -> str:
-    lines = ["# Boss Progress Update", "", f"Period: {date_from} to {date_to}", ""]
+def deterministic_stakeholder_update(date_from: str, date_to: str, items: list[WorkItem], workspace_name: str) -> str:
+    lines = ["# Stakeholder Update", "", f"Period: {date_from} to {date_to}", ""]
     if not items:
         return "\n".join(lines + ["No confirmed work evidence is available for this period yet."])
-    lines.append("Here is a concise update on my Ride Yanga work:")
+    lines.append(f"Here is a concise update on confirmed work for {workspace_name}:")
     lines.append("")
     for item in items[:6]:
         lines.append(f"- {item.summary}")
@@ -152,17 +180,17 @@ def deterministic_boss_update(date_from: str, date_to: str, items: list[WorkItem
     return "\n".join(lines)
 
 
-def deterministic_cv_achievements(date_from: str, date_to: str, items: list[WorkItem]) -> str:
+def deterministic_cv_achievements(date_from: str, date_to: str, items: list[WorkItem], workspace_name: str) -> str:
     lines = ["# CV Achievement Extraction", "", f"Evidence period: {date_from} to {date_to}", ""]
     if not items:
         return "\n".join(lines + ["No confirmed work evidence is available for CV achievement extraction."])
     by_area: dict[str, list[WorkItem]] = {}
     for item in items:
-        by_area.setdefault(item.area or "General Engineering", []).append(item)
+        by_area.setdefault(item.area or "General Work", []).append(item)
     for area, group in by_area.items():
         lines.append(f"## {area}")
         lines.append(
-            f"- Suggested CV bullet: Contributed to {area.lower()} work across Ride Yanga through {len(group)} confirmed evidence-backed activity record(s)."
+            f"- Suggested CV bullet: Contributed to {area.lower()} work in {workspace_name} through {len(group)} confirmed evidence-backed activity record(s)."
         )
         lines.append(f"- Supporting evidence: {', '.join(item.title for item in group[:5])}")
         lines.append("- Confidence: CONFIRMED evidence, wording requires user review before use.")
@@ -312,7 +340,7 @@ def presentation_plan_from_report(report: GeneratedReport) -> dict:
     if not slides:
         slides.append({"title": "Progress Overview", "purpose": "overview", "bullets": ["No confirmed evidence is available for this period."], "evidence_refs": []})
     return {
-        "title": "Meeting Presentation" if report.report_type == "Meeting Presentation" else report.title,
+        "title": "Meeting Presentation" if report_type_label(report.report_type) == "Meeting Presentation" else report.title,
         "reporting_period": f"{report.date_from} to {report.date_to}",
         "slides": slides[:6],
     }
@@ -326,3 +354,7 @@ def clean_slide_bullet(text: str) -> str:
     if not text or text == "---":
         return ""
     return text
+
+
+def report_type_label(report_type: str) -> str:
+    return LEGACY_REPORT_TYPE_ALIASES.get(report_type, report_type)

@@ -5,7 +5,7 @@ from datetime import date, timedelta
 
 from sqlalchemy.orm import Session
 
-from ..models import AppSetting, Conversation, ConversationMessage, WorkItem
+from ..models import AppSetting, Conversation, ConversationMessage, WorkItem, Workspace
 from .ai import AIUnavailable, OllamaProvider
 from .fts import search_fts
 
@@ -22,7 +22,9 @@ def answer_work_question(db: Session, workspace_id: int, question: str, conversa
     db.add(ConversationMessage(conversation_id=conversation.id, role="user", content=question))
     retrieved = search_fts(db, workspace_id, question, limit=10)
     retrieved = merge_retrieved(retrieved, intent_evidence_rows(db, workspace_id, question))
-    answer_result = ai_answer(db, question, retrieved)
+    workspace = db.get(Workspace, workspace_id)
+    workspace_name = workspace.name if workspace else "this workspace"
+    answer_result = ai_answer(db, question, retrieved, workspace_name)
     if answer_result:
         answer = answer_result["answer"]
         analysis_mode = answer_result["analysis_mode"]
@@ -47,7 +49,7 @@ def answer_work_question(db: Session, workspace_id: int, question: str, conversa
     }
 
 
-def ai_answer(db: Session, question: str, retrieved: list[dict]) -> dict | None:
+def ai_answer(db: Session, question: str, retrieved: list[dict], workspace_name: str) -> dict | None:
     setting = db.get(AppSetting, "selected_model")
     model = setting.value if setting else ""
     if not model:
@@ -57,7 +59,7 @@ def ai_answer(db: Session, question: str, retrieved: list[dict]) -> dict | None:
         return None
     context = "\n".join(f"- [{row['content_type']}] {row['title']}: {row['body'][:600]}" for row in retrieved)
     prompt = f"""
-Answer this question about Alfy's Ride Yanga work.
+Answer this question about work in the workspace named {workspace_name}.
 Use only the retrieved local evidence. If evidence is weak, say so.
 
 Question: {question}
@@ -110,7 +112,7 @@ def deterministic_answer(db: Session, workspace_id: int, question: str, retrieve
         if items:
             by_area: dict[str, int] = {}
             for item in items:
-                by_area[item.area or "General Engineering"] = by_area.get(item.area or "General Engineering", 0) + 1
+                by_area[item.area or "General Work"] = by_area.get(item.area or "General Work", 0) + 1
             area_line = ", ".join(f"{area} ({count})" for area, count in sorted(by_area.items()))
             bullets = "\n".join(f"- {item.work_date}: {item.title}" for item in items[:12])
             return f"Based on confirmed evidence since {since.isoformat()}, I found {len(items)} work item(s). Main areas: {area_line}.\n\n{bullets}"

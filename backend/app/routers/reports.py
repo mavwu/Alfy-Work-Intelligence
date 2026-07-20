@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from ..bootstrap import ensure_defaults
 from ..db import get_db
 from ..models import GeneratedReport, ReportRevision
-from ..services.reports import REPORT_TYPES, create_report_revision, evidence_for_period, export_docx, export_pptx, generate_report, report_items_for_revision, restore_report_revision
+from ..services.reports import ACCEPTED_REPORT_TYPES, REPORT_TYPES, create_report_revision, evidence_for_period, export_docx, export_pptx, generate_report, report_items_for_revision, restore_report_revision
 
 router = APIRouter()
 
@@ -47,7 +47,7 @@ def preview(payload: ReportRequest, db: Session = Depends(get_db)):
 @router.post("/reports")
 def create_report(payload: ReportRequest, db: Session = Depends(get_db)):
     workspace = ensure_defaults(db)
-    if payload.report_type not in REPORT_TYPES:
+    if payload.report_type not in ACCEPTED_REPORT_TYPES:
         raise HTTPException(status_code=400, detail="Unknown report type.")
     report = generate_report(db, workspace.id, payload.report_type, payload.date_from, payload.date_to, payload.include_inferred_ids)
     return serialize_report(report)

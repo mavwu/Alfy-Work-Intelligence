@@ -3,7 +3,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from .config import DEFAULT_USER_NAME, DEFAULT_WORKSPACE_NAME
+from .config import DEFAULT_REPORT_AUDIENCE, DEFAULT_USER_NAME, DEFAULT_WORKSPACE_NAME
 from .db import Base
 
 
@@ -168,7 +168,7 @@ class ReportStyleProfile(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), unique=True)
-    audience: Mapped[str] = mapped_column(String(160), default="CTO / Management")
+    audience: Mapped[str] = mapped_column(String(160), default=DEFAULT_REPORT_AUDIENCE)
     tone: Mapped[str] = mapped_column(String(120), default="Professional")
     technical_depth: Mapped[str] = mapped_column(String(120), default="Moderate")
     notes: Mapped[str] = mapped_column(Text, default="Explain technical context clearly before conclusions. Prefer concrete findings and practical recommendations. Avoid exaggerated achievements.")

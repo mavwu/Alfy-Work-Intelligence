@@ -72,11 +72,11 @@ class SemanticAnalysisRun(BaseModel):
     duration_seconds: float = 0.0
 
 
-SYSTEM_SEMANTIC_EXTRACTION = """You extract structured semantic work evidence from raw engineering notes.
+SYSTEM_SEMANTIC_EXTRACTION = """You extract structured semantic work evidence from raw work notes.
 Return JSON only. Do not write a professional report.
 
 Rules:
-- Treat the input as a messy local work note from a software engineer.
+- Treat the input as a messy local work note from a person recording professional work.
 - Split multiple unrelated topics into multiple events.
 - Preserve chronology when the note changes understanding over time.
 - Distinguish investigation from implementation.
@@ -191,7 +191,7 @@ def semantic_prompt(raw_text: str) -> str:
 Extract structured semantic work evidence from this raw work note.
 
 Return JSON only. Use concise factual statements and separate unrelated topics into separate events.
-Focus on engineering meaning:
+Focus on work meaning:
 - investigation vs implementation
 - attempted fix vs successful fix
 - observed configuration vs confirmed capability
@@ -564,7 +564,7 @@ def infer_subject_from_text(text: str, global_subject: str | None = None) -> str
         return "Notification support"
     if "booking" in lower:
         return "Booking workflow"
-    return "General engineering work"
+    return "General work"
 
 
 def infer_statement_from_subject(subject: str, fact_type: FactType) -> str:

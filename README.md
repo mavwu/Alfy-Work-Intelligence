@@ -1,17 +1,17 @@
 # Alfy Work Intelligence
 
-Alfy Work Intelligence is a local-first personal work intelligence system for Ride Yanga engineering work. It captures messy work notes, imports historical reports, scans local Git repositories read-only, stores evidence in SQLite, and helps generate grounded updates, reports, reflections, and exports.
+Alfy Work Intelligence is a local-first personal work intelligence system for recording, reviewing, proving, searching, and reporting completed work. It captures messy work notes, imports historical work documents, optionally scans local Git repositories read-only, stores evidence in SQLite, and helps generate grounded updates, reports, reflections, and exports.
 
 The V1 app is intentionally single-user and local. There are no cloud accounts, hosted databases, subscriptions, teams, employee monitoring, screenshots, keylogging, or automatic remote AI calls.
 
 ## What V1 Does
 
-- Creates one default workspace: `Ride Yanga`, for user `Alfy`.
+- Creates one default workspace seeded as `Ride Yanga`, for display name `Alfy`, while keeping workspace name, display name, role title, and default report audience configurable.
 - Saves raw work logs exactly as entered.
 - Extracts reviewable structured work items from messy notes.
 - Supports Evidence Only Mode when Ollama is unavailable.
 - Connects to local Ollama when available and lets you select an installed model.
-- Registers multiple local Git repositories with roles:
+- Optionally registers multiple local Git repositories with roles:
   - `USER_APP`
   - `DRIVER_APP`
   - `DASHBOARD_API`
@@ -109,17 +109,18 @@ The app does not download models automatically.
 ## Core Workflow
 
 1. Complete onboarding.
-2. Register Ride Yanga repositories.
-3. Link Working Repo to Dashboard / API if it promotes tested changes there.
-4. Import historical reports and summaries.
-5. Use Log Work for quick messy notes or pasted Codex/ChatGPT summaries.
-6. Review inferred work items.
-7. Confirm valid work.
-8. Scan repositories.
-9. Ask work-history questions in Chat.
-10. Generate a report draft.
-11. Review and approve it.
-12. Export DOCX or PPTX.
+2. Configure your display name, workspace, role title, and report audience.
+3. Optionally register Git repositories.
+4. Link Working Repo to Dashboard / API if it promotes tested changes there.
+5. Import historical reports, work notes, or project documents.
+6. Use Log Work for quick messy notes or pasted Codex/ChatGPT summaries.
+7. Review inferred work items.
+8. Confirm valid work.
+9. Scan repositories when using Git evidence.
+10. Ask work-history questions in Chat.
+11. Generate a report draft.
+12. Review and approve it.
+13. Export DOCX or PPTX.
 
 ## Running Tests
 
@@ -160,6 +161,7 @@ npm run build
 - Large/generated dependency folders are ignored during Git scanning.
 - AI prompts are separated by task area instead of using one universal prompt.
 - Ollama is the only implemented AI provider in V1.
+- Legacy report type values remain readable. New report choices use generic labels such as `Monthly Work Summary`, `Stakeholder Update`, `Issue and Resolution Report`, and `Investigation Report`, while older stored values such as `Monthly Engineering Summary` and `Boss Progress Update` are accepted as backwards-compatible aliases.
 
 ## Deferred or Incomplete Features
 
