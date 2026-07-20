@@ -18,7 +18,7 @@ async def import_documents(files: list[UploadFile] = File(...), use_as_style_ref
     for file in files:
         data = await file.read()
         digest = content_hash(data)
-        existing = db.query(ImportedDocument).filter(ImportedDocument.content_hash == digest).first()
+        existing = db.query(ImportedDocument).filter(ImportedDocument.workspace_id == workspace.id, ImportedDocument.content_hash == digest).first()
         if existing:
             results.append({"filename": file.filename, "duplicate": True, "document_id": existing.id})
             continue

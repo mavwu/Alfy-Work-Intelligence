@@ -17,8 +17,29 @@ class Workspace(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), default=DEFAULT_WORKSPACE_NAME, unique=True)
     user_name: Mapped[str] = mapped_column(String(120), default=DEFAULT_USER_NAME)
+    workspace_type: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     onboarding_complete: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+
+class Project(Base):
+    __tablename__ = "projects"
+    __table_args__ = (UniqueConstraint("workspace_id", "name", name="uq_workspace_project_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    name: Mapped[str] = mapped_column(String(180))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="ACTIVE")
+    category: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    start_date: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    end_date: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+    workspace: Mapped["Workspace"] = relationship()
 
 
 class Repository(Base):
@@ -107,9 +128,12 @@ class WorkItem(Base):
     fixes: Mapped[str | None] = mapped_column(Text)
     pending_work: Mapped[str | None] = mapped_column(Text)
     related_repository_id: Mapped[int | None] = mapped_column(ForeignKey("repositories.id"), nullable=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
     extraction_confidence: Mapped[float] = mapped_column(Float, default=0.5)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+
+    project: Mapped["Project | None"] = relationship()
 
 
 class Evidence(Base):
@@ -180,6 +204,7 @@ class GeneratedReport(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
     report_type: Mapped[str] = mapped_column(String(80))
     title: Mapped[str] = mapped_column(String(240))
     date_from: Mapped[str] = mapped_column(String(20))

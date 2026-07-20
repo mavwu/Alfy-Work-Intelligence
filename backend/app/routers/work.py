@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from ..bootstrap import ensure_defaults
 from ..db import get_db
-from ..models import Evidence, RawWorkLog, WorkItem
+from ..models import Evidence, Project, RawWorkLog, Repository, WorkItem
 from ..services.extraction import extract_work_items_with_metadata
 from ..services.fts import upsert_fts
 
@@ -14,6 +14,7 @@ router = APIRouter()
 class WorkLogIn(BaseModel):
     raw_text: str
     source_label: str = "Manual work log"
+    project_id: int | None = None
 
 
 class WorkItemUpdate(BaseModel):
@@ -28,6 +29,7 @@ class WorkItemUpdate(BaseModel):
     fixes: str | None = None
     pending_work: str | None = None
     related_repository_id: int | None = None
+    project_id: int | None = None
 
 
 @router.post("/work-logs")
@@ -35,6 +37,7 @@ def create_work_log(payload: WorkLogIn, db: Session = Depends(get_db)):
     workspace = ensure_defaults(db)
     if not payload.raw_text.strip():
         raise HTTPException(status_code=400, detail="Work log text is required.")
+    project_id = validate_project_assignment(db, workspace.id, payload.project_id)
     raw = RawWorkLog(workspace_id=workspace.id, raw_text=payload.raw_text, source_label=payload.source_label)
     db.add(raw)
     db.flush()
@@ -55,6 +58,7 @@ def create_work_log(payload: WorkLogIn, db: Session = Depends(get_db)):
             findings=item_data.get("findings"),
             fixes=item_data.get("fixes"),
             pending_work=item_data.get("pending_work"),
+            project_id=project_id,
             extraction_confidence=item_data.get("confidence", 0.5),
         )
         db.add(item)
@@ -84,21 +88,31 @@ def create_work_log(payload: WorkLogIn, db: Session = Depends(get_db)):
 
 
 @router.get("/work-items")
-def list_work_items(status: str | None = None, db: Session = Depends(get_db)):
+def list_work_items(status: str | None = None, project_id: int | None = None, db: Session = Depends(get_db)):
     workspace = ensure_defaults(db)
     query = db.query(WorkItem).filter(WorkItem.workspace_id == workspace.id)
     if status:
         query = query.filter(WorkItem.status == status)
+    if project_id is not None:
+        query = query.filter(WorkItem.project_id == project_id)
     items = query.order_by(WorkItem.work_date.desc(), WorkItem.created_at.desc()).limit(300).all()
     return [serialize_item(item) for item in items]
 
 
 @router.put("/work-items/{item_id}")
 def update_work_item(item_id: int, payload: WorkItemUpdate, db: Session = Depends(get_db)):
+    workspace = ensure_defaults(db)
     item = db.get(WorkItem, item_id)
-    if not item:
+    if not item or item.workspace_id != workspace.id:
         raise HTTPException(status_code=404, detail="Work item not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    if "project_id" in data:
+        data["project_id"] = validate_project_assignment(db, workspace.id, data["project_id"])
+    if "related_repository_id" in data and data["related_repository_id"] is not None:
+        repo = db.get(Repository, data["related_repository_id"])
+        if not repo or repo.workspace_id != workspace.id:
+            raise HTTPException(status_code=400, detail="Repository does not belong to the active workspace.")
+    for field, value in data.items():
         setattr(item, field, value)
     if item.status == "CONFIRMED":
         item.evidence_confidence = "CONFIRMED"
@@ -118,8 +132,9 @@ def ignore_work_item(item_id: int, db: Session = Depends(get_db)):
 
 
 def set_status(db: Session, item_id: int, status: str):
+    workspace = ensure_defaults(db)
     item = db.get(WorkItem, item_id)
-    if not item:
+    if not item or item.workspace_id != workspace.id:
         raise HTTPException(status_code=404, detail="Work item not found")
     item.status = status
     if status == "CONFIRMED":
@@ -129,6 +144,7 @@ def set_status(db: Session, item_id: int, status: str):
 
 
 def serialize_item(item: WorkItem):
+    project = getattr(item, "project", None)
     return {
         "id": item.id,
         "title": item.title,
@@ -143,5 +159,18 @@ def serialize_item(item: WorkItem):
         "fixes": item.fixes,
         "pending_work": item.pending_work,
         "related_repository_id": item.related_repository_id,
+        "project_id": item.project_id,
+        "project_name": project.name if project else None,
         "extraction_confidence": item.extraction_confidence,
     }
+
+
+def validate_project_assignment(db: Session, workspace_id: int, project_id: int | None) -> int | None:
+    if project_id is None:
+        return None
+    project = db.get(Project, project_id)
+    if not project or project.workspace_id != workspace_id:
+        raise HTTPException(status_code=400, detail="Project does not belong to the active workspace.")
+    if project.status == "ARCHIVED":
+        raise HTTPException(status_code=400, detail="Archived projects cannot receive new work items.")
+    return project.id

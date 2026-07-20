@@ -3,19 +3,21 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .bootstrap import ensure_defaults
 from .db import SessionLocal, init_db
-from .routers import chat, dashboard, imports, repositories, reports, system, timeline, work
+from .routers import chat, dashboard, imports, projects, repositories, reports, system, timeline, work
 
 app = FastAPI(title="Alfy Work Intelligence", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+    allow_origin_regex=r"^http://(127\.0\.0\.1|localhost):\d+$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.include_router(system.router, prefix="/api", tags=["system"])
+app.include_router(projects.router, prefix="/api", tags=["projects"])
 app.include_router(repositories.router, prefix="/api", tags=["repositories"])
 app.include_router(work.router, prefix="/api", tags=["work"])
 app.include_router(imports.router, prefix="/api", tags=["imports"])

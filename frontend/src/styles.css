@@ -177,6 +177,29 @@ nav button.active {
   margin-top: auto;
 }
 
+.workspace-switcher {
+  display: grid;
+  gap: 9px;
+}
+
+.workspace-switcher label {
+  margin: 0;
+}
+
+.mini-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.mini-form.stacked {
+  grid-template-columns: 1fr;
+}
+
+.mini-form textarea {
+  min-height: 82px;
+}
+
 .main {
   padding: 28px;
   max-width: 1240px;

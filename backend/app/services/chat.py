@@ -15,7 +15,11 @@ logger = logging.getLogger(__name__)
 def answer_work_question(db: Session, workspace_id: int, question: str, conversation_id: int | None = None) -> dict:
     if conversation_id:
         conversation = db.get(Conversation, conversation_id)
+        if conversation and conversation.workspace_id != workspace_id:
+            conversation = None
     else:
+        conversation = None
+    if not conversation:
         conversation = Conversation(workspace_id=workspace_id, title=question[:80] or "Work chat")
         db.add(conversation)
         db.flush()

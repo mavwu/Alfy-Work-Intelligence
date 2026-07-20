@@ -25,6 +25,11 @@ def init_db():
 
     Base.metadata.create_all(bind=engine)
     with engine.begin() as conn:
+        ensure_column(conn, "workspaces", "workspace_type", "VARCHAR(60)")
+        ensure_column(conn, "workspaces", "description", "TEXT")
+        ensure_column(conn, "workspaces", "updated_at", "DATETIME")
+        ensure_column(conn, "work_items", "project_id", "INTEGER")
+        ensure_column(conn, "generated_reports", "project_id", "INTEGER")
         conn.execute(
             text(
                 """
@@ -42,3 +47,11 @@ def init_db():
         )
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_evidence_type ON evidence(source_type)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_work_items_date ON work_items(work_date)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_work_items_project_id ON work_items(project_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_generated_reports_project_id ON generated_reports(project_id)"))
+
+
+def ensure_column(conn, table_name: str, column_name: str, ddl: str):
+    columns = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table_name})"))}
+    if column_name not in columns:
+        conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}"))

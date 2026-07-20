@@ -40,6 +40,10 @@ def create_repository(payload: RepositoryIn, db: Session = Depends(get_db)):
     ok, message = validate_git_repository(payload.local_path)
     if not ok:
         raise HTTPException(status_code=400, detail=message)
+    if payload.promotes_to_repository_id is not None:
+        target = db.get(Repository, payload.promotes_to_repository_id)
+        if not target or target.workspace_id != workspace.id:
+            raise HTTPException(status_code=400, detail="Canonical repository must belong to the active workspace.")
     repo = Repository(
         workspace_id=workspace.id,
         name=payload.name.strip() or Path(payload.local_path).name,
@@ -56,8 +60,9 @@ def create_repository(payload: RepositoryIn, db: Session = Depends(get_db)):
 
 @router.put("/repositories/{repository_id}")
 def update_repository(repository_id: int, payload: RepositoryIn, db: Session = Depends(get_db)):
+    workspace = ensure_defaults(db)
     repo = db.get(Repository, repository_id)
-    if not repo:
+    if not repo or repo.workspace_id != workspace.id:
         raise HTTPException(status_code=404, detail="Repository not found")
     ok, message = validate_git_repository(payload.local_path)
     if not ok:
@@ -72,7 +77,12 @@ def update_repository(repository_id: int, payload: RepositoryIn, db: Session = D
 
 
 @router.post("/git/scan")
-def start_scan(payload: ScanRequest):
+def start_scan(payload: ScanRequest, db: Session = Depends(get_db)):
+    workspace = ensure_defaults(db)
+    repo = db.get(Repository, payload.repository_id)
+    if not repo or repo.workspace_id != workspace.id:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
     def run(job_id: str):
         db = SessionLocal()
         try:
@@ -88,6 +98,10 @@ def start_scan(payload: ScanRequest):
 
 @router.post("/git/scan-now/{repository_id}")
 def scan_now(repository_id: int, db: Session = Depends(get_db)):
+    workspace = ensure_defaults(db)
+    repo = db.get(Repository, repository_id)
+    if not repo or repo.workspace_id != workspace.id:
+        raise HTTPException(status_code=404, detail="Repository not found")
     try:
         return scan_repository(db, repository_id)
     except GitScanError as exc:
@@ -119,3 +133,7 @@ def serialize_repo(repo: Repository):
         "promotes_to_repository_id": repo.promotes_to_repository_id,
         "last_scanned_at": repo.last_scanned_at.isoformat() if repo.last_scanned_at else None,
     }
+    if payload.promotes_to_repository_id is not None:
+        target = db.get(Repository, payload.promotes_to_repository_id)
+        if not target or target.workspace_id != workspace.id:
+            raise HTTPException(status_code=400, detail="Canonical repository must belong to the active workspace.")

@@ -86,23 +86,167 @@ def test_workspace_rename_does_not_create_duplicate_default_workspace(client):
 
 
 def test_user_display_name_and_report_audience_are_configurable(client):
+    client.put("/api/settings", json={"key": "profile_display_name", "value": "Miriam"})
     response = client.put(
         "/api/workspaces/default",
         json={
             "name": "Freelance Work",
-            "user_name": "Miriam",
             "role_title": "Designer",
             "report_audience": "Client",
         },
     )
     assert response.status_code == 200
-    assert response.json()["user_name"] == "Miriam"
+    assert response.json()["name"] == "Freelance Work"
 
     settings = client.get("/api/settings").json()
     assert settings["settings"]["profile_display_name"] == "Miriam"
     assert settings["settings"]["profile_role_title"] == "Designer"
     assert settings["settings"]["default_report_audience"] == "Client"
     assert settings["style_profile"]["audience"] == "Client"
+
+
+def test_workspace_rename_does_not_change_profile_identity(client):
+    client.put("/api/settings", json={"key": "profile_display_name", "value": "Miriam"})
+    client.put("/api/workspaces/default", json={"name": "Academic Work"})
+    settings = client.get("/api/settings").json()
+    assert settings["settings"]["profile_display_name"] == "Miriam"
+    assert client.get("/api/workspaces/default").json()["name"] == "Academic Work"
+
+
+def test_multiple_workspaces_active_selection_and_fallback(client):
+    ride = client.get("/api/workspaces/active").json()
+    created = client.post("/api/workspaces", json={"name": "Freelance Work", "workspace_type": "Freelance"})
+    assert created.status_code == 200
+    assert len(client.get("/api/workspaces").json()) == 2
+    duplicate = client.post("/api/workspaces", json={"name": "Freelance Work"})
+    assert duplicate.status_code == 400
+
+    selected = client.post(f"/api/workspaces/{created.json()['id']}/select")
+    assert selected.status_code == 200
+    assert client.get("/api/workspaces/active").json()["name"] == "Freelance Work"
+
+    from app.bootstrap import ensure_defaults
+    from app.db import SessionLocal
+    from app.models import AppSetting
+
+    db = SessionLocal()
+    try:
+        db.get(AppSetting, "active_workspace_id").value = "999999"
+        db.commit()
+        fallback = ensure_defaults(db)
+        assert fallback.id == ride["id"]
+        assert db.get(AppSetting, "active_workspace_id").value == str(ride["id"])
+    finally:
+        db.close()
+
+
+def test_switching_workspace_scopes_work_items_search_and_chat(client):
+    ride_item = client.post("/api/work-logs", json={"raw_text": "Completed Ride Yanga booking follow-up."}).json()["extracted_items"][0]
+    client.post(f"/api/work-items/{ride_item['id']}/confirm")
+    freelance = client.post("/api/workspaces", json={"name": "Freelance Work"}).json()
+    client.post(f"/api/workspaces/{freelance['id']}/select")
+    freelance_item = client.post("/api/work-logs", json={"raw_text": "Met a client about a poster revision."}).json()["extracted_items"][0]
+    client.post(f"/api/work-items/{freelance_item['id']}/confirm")
+
+    items = client.get("/api/work-items").json()
+    assert {item["id"] for item in items} == {freelance_item["id"]}
+    assert not client.get("/api/search?q=booking").json()
+    assert client.get("/api/search?q=poster").json()
+
+    chat = client.post("/api/chat", json={"message": "What work did I complete this week?"}).json()
+    assert "poster" in chat["answer"].lower()
+    assert "booking" not in chat["answer"].lower()
+
+
+def test_projects_are_scoped_validated_updated_and_archived(client):
+    missing = client.post("/api/projects", json={"workspace_id": 999999, "name": "Missing Workspace Project"})
+    assert missing.status_code == 404
+
+    first = client.post("/api/projects", json={"name": "Client Website", "category": "Client", "description": "Website work"})
+    assert first.status_code == 200
+    project = first.json()
+    duplicate = client.post("/api/projects", json={"name": "Client Website"})
+    assert duplicate.status_code == 400
+
+    updated = client.put(
+        f"/api/projects/{project['id']}",
+        json={"name": "Client Website Refresh", "status": "PAUSED", "category": "Website"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "Client Website Refresh"
+    assert updated.json()["status"] == "PAUSED"
+
+    archived = client.post(f"/api/projects/{project['id']}/archive")
+    assert archived.status_code == 200
+    assert archived.json()["status"] == "ARCHIVED"
+    assert not any(row["id"] == project["id"] for row in client.get("/api/projects").json())
+    assert any(row["id"] == project["id"] for row in client.get("/api/projects?include_archived=true").json())
+
+
+def test_project_lists_are_scoped_by_workspace(client):
+    ride_project = client.post("/api/projects", json={"name": "Boat Cruise"}).json()
+    freelance = client.post("/api/workspaces", json={"name": "Freelance Work"}).json()
+    freelance_project = client.post("/api/projects", json={"workspace_id": freelance["id"], "name": "Client Website"}).json()
+
+    active_projects = client.get("/api/projects").json()
+    assert [row["id"] for row in active_projects] == [ride_project["id"]]
+
+    client.post(f"/api/workspaces/{freelance['id']}/select")
+    switched_projects = client.get("/api/projects").json()
+    assert [row["id"] for row in switched_projects] == [freelance_project["id"]]
+
+
+def test_work_item_project_assignment_validation_and_unassign(client):
+    ride_project = client.post("/api/projects", json={"name": "Boat Cruise"}).json()
+    created = client.post("/api/work-logs", json={"raw_text": "Reviewed booking copy."}).json()["extracted_items"][0]
+    assert created["project_id"] is None
+
+    assigned = client.put(f"/api/work-items/{created['id']}", json={"project_id": ride_project["id"]})
+    assert assigned.status_code == 200
+    assert assigned.json()["project_id"] == ride_project["id"]
+    assert assigned.json()["project_name"] == "Boat Cruise"
+
+    unassigned = client.put(f"/api/work-items/{created['id']}", json={"project_id": None})
+    assert unassigned.status_code == 200
+    assert unassigned.json()["project_id"] is None
+
+    freelance = client.post("/api/workspaces", json={"name": "Freelance Work"}).json()
+    freelance_project = client.post("/api/projects", json={"workspace_id": freelance["id"], "name": "Client Website"}).json()
+    bad_assignment = client.put(f"/api/work-items/{created['id']}", json={"project_id": freelance_project["id"]})
+    assert bad_assignment.status_code == 400
+
+    archived = client.post(f"/api/projects/{ride_project['id']}/archive").json()
+    assert archived["status"] == "ARCHIVED"
+    archived_assignment = client.put(f"/api/work-items/{created['id']}", json={"project_id": ride_project["id"]})
+    assert archived_assignment.status_code == 400
+
+
+def test_project_filtered_reports_and_timeline(client):
+    project = client.post("/api/projects", json={"name": "Client Website"}).json()
+    included = client.post(
+        "/api/work-logs",
+        json={"raw_text": "Updated the landing-page copy.", "project_id": project["id"]},
+    ).json()["extracted_items"][0]
+    excluded = client.post("/api/work-logs", json={"raw_text": "Prepared an unrelated invoice."}).json()["extracted_items"][0]
+    client.post(f"/api/work-items/{included['id']}/confirm")
+    client.post(f"/api/work-items/{excluded['id']}/confirm")
+
+    timeline = client.get(f"/api/timeline?project_id={project['id']}").json()
+    timeline_ids = {item["id"] for group in timeline for item in group["items"]}
+    assert timeline_ids == {included["id"]}
+
+    preview = client.post(
+        "/api/reports/preview",
+        json={"report_type": "Weekly Work Report", "date_from": "2000-01-01", "date_to": "2999-12-31", "project_id": project["id"]},
+    ).json()
+    assert [item["id"] for item in preview["confirmed"]] == [included["id"]]
+
+    report = client.post(
+        "/api/reports",
+        json={"report_type": "Weekly Work Report", "date_from": "2000-01-01", "date_to": "2999-12-31", "project_id": project["id"]},
+    ).json()
+    assert report["project_id"] == project["id"]
+    assert "invoice" not in report["draft_markdown"].lower()
 
 
 def test_report_prompt_uses_selected_workspace_and_audience(client, monkeypatch):

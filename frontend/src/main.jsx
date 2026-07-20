@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   BarChart3,
+  Briefcase,
   Bot,
   FileDown,
   FileText,
@@ -22,6 +23,7 @@ const navItems = [
   ['Dashboard', Home],
   ['Timeline', History],
   ['Work Log', Plus],
+  ['Projects', Briefcase],
   ['Repositories', FolderGit2],
   ['Reports', FileDown],
   ['Chat', MessageSquare],
@@ -32,12 +34,20 @@ const navItems = [
 function App() {
   const [view, setView] = useState('Dashboard');
   const [workspace, setWorkspace] = useState(null);
+  const [workspaces, setWorkspaces] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
 
+  async function loadWorkspaces() {
+    const rows = await api('/api/workspaces');
+    setWorkspaces(rows);
+    const active = rows.find((item) => item.is_active) || rows[0];
+    if (active) setWorkspace(active);
+    return rows;
+  }
+
   useEffect(() => {
-    api('/api/workspaces/default')
-      .then(setWorkspace)
+    loadWorkspaces()
       .finally(() => setLoading(false));
   }, []);
 
@@ -49,13 +59,14 @@ function App() {
 
   if (loading) return <ShellLoading />;
   if (!workspace?.onboarding_complete) {
-    return <Onboarding workspace={workspace} onDone={(next) => setWorkspace(next)} />;
+    return <Onboarding workspace={workspace} onDone={async (next) => { setWorkspace(next); await loadWorkspaces(); }} />;
   }
 
   const Page = {
     Dashboard,
     Timeline: TimelinePage,
     'Work Log': WorkLog,
+    Projects,
     Repositories,
     Reports,
     Chat,
@@ -73,6 +84,15 @@ function App() {
             <span>{workspace.name}</span>
           </div>
         </div>
+        <WorkspaceSwitcher
+          workspace={workspace}
+          workspaces={workspaces}
+          onChanged={async (next) => {
+            setWorkspace(next);
+            await loadWorkspaces();
+            setRefreshKey((value) => value + 1);
+          }}
+        />
         <nav>
           {navItems.map(([label, Icon]) => (
             <button key={label} className={view === label ? 'active' : ''} onClick={() => setView(label)} title={label}>
@@ -87,7 +107,7 @@ function App() {
         </button>
       </aside>
       <main className="main">
-        <Page workspace={workspace} setWorkspace={setWorkspace} refreshKey={refreshKey} refresh={() => setRefreshKey((v) => v + 1)} />
+        <Page key={`${workspace.id}-${view}-${refreshKey}`} workspace={workspace} setWorkspace={setWorkspace} reloadWorkspaces={loadWorkspaces} refreshKey={refreshKey} refresh={() => setRefreshKey((v) => v + 1)} />
       </main>
     </div>
   );
@@ -95,6 +115,82 @@ function App() {
 
 function ShellLoading() {
   return <div className="center-screen">Starting local work memory...</div>;
+}
+
+function WorkspaceSwitcher({ workspace, workspaces, onChanged }) {
+  const [newName, setNewName] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({
+    name: workspace?.name || '',
+    workspace_type: workspace?.workspace_type || '',
+    description: workspace?.description || '',
+    report_audience: workspace?.report_audience || '',
+  });
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    setDraft({
+      name: workspace?.name || '',
+      workspace_type: workspace?.workspace_type || '',
+      description: workspace?.description || '',
+      report_audience: workspace?.report_audience || '',
+    });
+  }, [workspace]);
+
+  async function selectWorkspace(id) {
+    const next = await api(`/api/workspaces/${id}/select`, { method: 'POST' });
+    await onChanged(next);
+  }
+
+  async function createWorkspace() {
+    setMessage('');
+    if (!newName.trim()) return;
+    try {
+      const created = await api('/api/workspaces', { method: 'POST', body: { name: newName, workspace_type: 'Other' } });
+      setNewName('');
+      await selectWorkspace(created.id);
+    } catch (err) {
+      setMessage(err.message);
+    }
+  }
+
+  async function saveWorkspace() {
+    setMessage('');
+    try {
+      const saved = await api(`/api/workspaces/${workspace.id}`, { method: 'PUT', body: draft });
+      setEditing(false);
+      await onChanged(saved);
+    } catch (err) {
+      setMessage(err.message);
+    }
+  }
+
+  return (
+    <div className="workspace-switcher">
+      <label>Workspace</label>
+      <select value={workspace?.id || ''} onChange={(event) => selectWorkspace(event.target.value)}>
+        {workspaces.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+      </select>
+      <div className="mini-form">
+        <input placeholder="New workspace" value={newName} onChange={(event) => setNewName(event.target.value)} />
+        <button onClick={createWorkspace}>Add</button>
+      </div>
+      <button onClick={() => setEditing(!editing)}>{editing ? 'Close' : 'Edit Workspace'}</button>
+      {editing && (
+        <div className="mini-form stacked">
+          <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
+          <select value={draft.workspace_type || ''} onChange={(event) => setDraft({ ...draft, workspace_type: event.target.value })}>
+            <option value="">Type</option>
+            {['Employment', 'Freelance', 'Internship', 'Client', 'Personal', 'Academic', 'Business', 'Other'].map((kind) => <option key={kind}>{kind}</option>)}
+          </select>
+          <input placeholder="Report audience" value={draft.report_audience || ''} onChange={(event) => setDraft({ ...draft, report_audience: event.target.value })} />
+          <textarea placeholder="Description" value={draft.description || ''} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
+          <button className="primary" onClick={saveWorkspace}>Save Workspace</button>
+        </div>
+      )}
+      {message && <p className="error">{message}</p>}
+    </div>
+  );
 }
 
 function Onboarding({ workspace, onDone }) {
@@ -127,9 +223,11 @@ function Onboarding({ workspace, onDone }) {
   }, []);
 
   async function saveWorkspace(done = false) {
+    await api('/api/settings', { method: 'PUT', body: { key: 'profile_display_name', value: displayName } });
+    await api('/api/settings', { method: 'PUT', body: { key: 'profile_role_title', value: roleTitle } });
     const next = await api('/api/workspaces/default', {
       method: 'PUT',
-      body: { name, user_name: displayName, role_title: roleTitle, report_audience: reportAudience, onboarding_complete: done },
+      body: { name, workspace_type: workspace?.workspace_type, report_audience: reportAudience, onboarding_complete: done },
     });
     return next;
   }
@@ -320,13 +418,94 @@ function Dashboard() {
   );
 }
 
-function WorkLog() {
+function Projects({ workspace }) {
+  const [projects, setProjects] = useState([]);
+  const [form, setForm] = useState({ name: '', description: '', status: 'ACTIVE', category: '', start_date: '', end_date: '' });
+  const [editingId, setEditingId] = useState(null);
+  const [message, setMessage] = useState('');
+
+  useEffect(() => { loadProjects(); }, [workspace?.id]);
+
+  async function loadProjects(includeArchived = true) {
+    setProjects(await api(`/api/projects?include_archived=${includeArchived}`));
+  }
+
+  async function saveProject() {
+    setMessage('');
+    try {
+      if (editingId) {
+        const saved = await api(`/api/projects/${editingId}`, { method: 'PUT', body: form });
+        setProjects(projects.map((project) => project.id === saved.id ? saved : project));
+      } else {
+        const created = await api('/api/projects', { method: 'POST', body: form });
+        setProjects([...projects, created]);
+      }
+      setForm({ name: '', description: '', status: 'ACTIVE', category: '', start_date: '', end_date: '' });
+      setEditingId(null);
+    } catch (err) {
+      setMessage(err.message);
+    }
+  }
+
+  function editProject(project) {
+    setEditingId(project.id);
+    setForm({
+      name: project.name || '',
+      description: project.description || '',
+      status: project.status || 'ACTIVE',
+      category: project.category || '',
+      start_date: project.start_date || '',
+      end_date: project.end_date || '',
+    });
+  }
+
+  async function archiveProject(project) {
+    const saved = await api(`/api/projects/${project.id}/archive`, { method: 'POST' });
+    setProjects(projects.map((item) => item.id === saved.id ? saved : item));
+  }
+
+  return (
+    <Section title="Projects" intro={`Organise work inside ${workspace?.name || 'this workspace'}. Existing work can stay unassigned until you classify it.`}>
+      <div className="form-grid">
+        <input placeholder="Project name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+        <input placeholder="Category" value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} />
+        <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>
+          {['ACTIVE', 'PAUSED', 'COMPLETED', 'ARCHIVED'].map((status) => <option key={status}>{status}</option>)}
+        </select>
+        <input type="date" value={form.start_date} onChange={(event) => setForm({ ...form, start_date: event.target.value })} />
+        <input type="date" value={form.end_date} onChange={(event) => setForm({ ...form, end_date: event.target.value })} />
+      </div>
+      <textarea placeholder="Description" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
+      {message && <p className="error">{message}</p>}
+      <button className="primary" disabled={!form.name.trim()} onClick={saveProject}>{editingId ? 'Save Project' : 'Create Project'}</button>
+      {editingId && <button onClick={() => { setEditingId(null); setForm({ name: '', description: '', status: 'ACTIVE', category: '', start_date: '', end_date: '' }); }}>Cancel Edit</button>}
+      <div className="cards">
+        {projects.length ? projects.map((project) => (
+          <article className="card" key={project.id}>
+            <div className="row"><h3>{project.name}</h3><StatusPill ok={project.status === 'ACTIVE'} label={project.status} /></div>
+            <p>{project.description || 'No description.'}</p>
+            <p className="muted">{project.category || 'No category'}{project.start_date ? ` - ${project.start_date}` : ''}{project.end_date ? ` to ${project.end_date}` : ''}</p>
+            <button onClick={() => editProject(project)}>Edit</button>
+            {project.status !== 'ARCHIVED' && <button onClick={() => archiveProject(project)}>Archive</button>}
+          </article>
+        )) : <Empty text="No projects in this workspace yet." />}
+      </div>
+    </Section>
+  );
+}
+
+function WorkLog({ workspace }) {
   const [rawText, setRawText] = useState('');
   const [result, setResult] = useState(null);
   const [items, setItems] = useState([]);
-  useEffect(() => { api('/api/work-items?status=REVIEW').then(setItems); }, [result]);
+  const [projects, setProjects] = useState([]);
+  const [projectId, setProjectId] = useState('');
+  useEffect(() => {
+    api('/api/projects').then(setProjects);
+  }, [workspace?.id]);
+  useEffect(() => { api('/api/work-items?status=REVIEW').then(setItems); }, [result, workspace?.id]);
   async function submit() {
-    const next = await api('/api/work-logs', { method: 'POST', body: { raw_text: rawText } });
+    const next = await api('/api/work-logs', { method: 'POST', body: { raw_text: rawText, project_id: projectId ? Number(projectId) : null } });
     setResult(next);
     setRawText('');
   }
@@ -343,12 +522,17 @@ function WorkLog() {
     setItems(items.filter((item) => item.id !== id));
   }
   return (
-    <Section title="Log Work" intro="Paste messy notes, a Codex summary, or a quick memory dump. The raw text is preserved exactly.">
+    <Section title="Log Work" intro={`Paste messy notes, a Codex summary, or a quick memory dump for ${workspace?.name || 'this workspace'}. The raw text is preserved exactly.`}>
+      <label>Project</label>
+      <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+        <option value="">Unassigned</option>
+        {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+      </select>
       <textarea className="work-box" placeholder="What did you work on?" value={rawText} onChange={(event) => setRawText(event.target.value)} />
       <button className="primary" disabled={!rawText.trim()} onClick={submit}><Plus size={18} />Extract Work Items</button>
       {result && <Notice>{result.extracted_items.length} review item(s) created via {result.analysis_mode}. {result.analysis_model ? `Model: ${result.analysis_model}.` : ''}</Notice>}
       <h2>Review Queue</h2>
-      {items.length ? items.map((item) => <ReviewCard key={item.id} item={item} onSave={save} onConfirm={confirm} onIgnore={ignore} />) : <Empty text="No inferred work waiting for review." />}
+      {items.length ? items.map((item) => <ReviewCard key={item.id} item={item} projects={projects} onSave={save} onConfirm={confirm} onIgnore={ignore} />) : <Empty text="No inferred work waiting for review." />}
     </Section>
   );
 }
@@ -412,11 +596,17 @@ function Repositories() {
   );
 }
 
-function TimelinePage() {
+function TimelinePage({ workspace }) {
   const [timeline, setTimeline] = useState([]);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
-  useEffect(() => { api('/api/timeline').then(setTimeline); }, []);
+  const [projects, setProjects] = useState([]);
+  const [projectId, setProjectId] = useState('');
+  useEffect(() => { api('/api/projects').then(setProjects); }, [workspace?.id]);
+  useEffect(() => {
+    const suffix = projectId ? `?project_id=${projectId}` : '';
+    api(`/api/timeline${suffix}`).then(setTimeline);
+  }, [projectId, workspace?.id]);
   async function search() {
     if (query.trim()) setResults(await api(`/api/search?q=${encodeURIComponent(query)}`));
   }
@@ -426,6 +616,12 @@ function TimelinePage() {
         <Search size={18} />
         <input placeholder="Search work history" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && search()} />
         <button onClick={search}>Search</button>
+      </div>
+      <div className="form-grid">
+        <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+          <option value="">All projects</option>
+          {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+        </select>
       </div>
       {results.length > 0 && <Panel title="Search Results">{results.map((row) => <EvidenceRow key={`${row.content_type}-${row.content_id}`} row={row} />)}</Panel>}
       {timeline.length ? timeline.map((group) => (
@@ -437,13 +633,18 @@ function TimelinePage() {
   );
 }
 
-function Reports() {
+function Reports({ workspace }) {
   const [types, setTypes] = useState([]);
   const [reports, setReports] = useState([]);
   const [preview, setPreview] = useState(null);
+  const [projects, setProjects] = useState([]);
   const today = new Date().toISOString().slice(0, 10);
-  const [form, setForm] = useState({ report_type: 'Weekly Work Report', date_from: today, date_to: today, include_inferred_ids: [] });
-  useEffect(() => { api('/api/reports/types').then((items) => { setTypes(items); setForm((f) => ({ ...f, report_type: items[1] || items[0] })); }); loadReports(); }, []);
+  const [form, setForm] = useState({ report_type: 'Weekly Work Report', date_from: today, date_to: today, project_id: null, include_inferred_ids: [] });
+  useEffect(() => {
+    api('/api/reports/types').then((items) => { setTypes(items); setForm((f) => ({ ...f, report_type: items[1] || items[0] })); });
+    api('/api/projects').then(setProjects);
+    loadReports();
+  }, [workspace?.id]);
   function loadReports() { api('/api/reports').then(setReports); }
   async function loadPreview() { setPreview(await api('/api/reports/preview', { method: 'POST', body: form })); }
   async function generate() {
@@ -460,6 +661,10 @@ function Reports() {
         <select value={form.report_type} onChange={(e) => setForm({ ...form, report_type: e.target.value })}>{types.map((type) => <option key={type}>{type}</option>)}</select>
         <input type="date" value={form.date_from} onChange={(e) => setForm({ ...form, date_from: e.target.value })} />
         <input type="date" value={form.date_to} onChange={(e) => setForm({ ...form, date_to: e.target.value })} />
+        <select value={form.project_id || ''} onChange={(e) => setForm({ ...form, project_id: e.target.value ? Number(e.target.value) : null })}>
+          <option value="">Entire workspace</option>
+          {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+        </select>
       </div>
       <button onClick={loadPreview}>Review Evidence</button>
       <button className="primary" onClick={generate}><FileDown size={16} />Generate Draft</button>
@@ -559,6 +764,8 @@ function SettingsPage({ workspace, setWorkspace }) {
         name: workspace?.name || '',
         user_name: data.settings?.profile_display_name || workspace?.user_name || '',
         role_title: data.settings?.profile_role_title || '',
+        workspace_type: workspace?.workspace_type || '',
+        description: workspace?.description || '',
         report_audience: data.settings?.default_report_audience || data.style_profile?.audience || '',
       });
     });
@@ -576,7 +783,17 @@ function SettingsPage({ workspace, setWorkspace }) {
     setStatus(await api('/api/ai/status'));
   }
   async function saveWorkspaceProfile() {
-    const next = await api('/api/workspaces/default', { method: 'PUT', body: workspaceForm });
+    await api('/api/settings', { method: 'PUT', body: { key: 'profile_display_name', value: workspaceForm.user_name } });
+    await api('/api/settings', { method: 'PUT', body: { key: 'profile_role_title', value: workspaceForm.role_title } });
+    const next = await api('/api/workspaces/default', {
+      method: 'PUT',
+      body: {
+        name: workspaceForm.name,
+        workspace_type: workspaceForm.workspace_type,
+        description: workspaceForm.description,
+        report_audience: workspaceForm.report_audience,
+      },
+    });
     setWorkspace(next);
     setSettings({
       ...settings,
@@ -594,8 +811,15 @@ function SettingsPage({ workspace, setWorkspace }) {
         <input placeholder="Optional" value={workspaceForm.role_title} onChange={(e) => setWorkspaceForm({ ...workspaceForm, role_title: e.target.value })} />
         <label>Workspace name</label>
         <input value={workspaceForm.name} onChange={(e) => setWorkspaceForm({ ...workspaceForm, name: e.target.value })} />
+        <label>Workspace type</label>
+        <select value={workspaceForm.workspace_type || ''} onChange={(e) => setWorkspaceForm({ ...workspaceForm, workspace_type: e.target.value })}>
+          <option value="">Type</option>
+          {['Employment', 'Freelance', 'Internship', 'Client', 'Personal', 'Academic', 'Business', 'Other'].map((kind) => <option key={kind}>{kind}</option>)}
+        </select>
         <label>Default report audience</label>
         <input placeholder="Stakeholder, supervisor, client, management..." value={workspaceForm.report_audience} onChange={(e) => setWorkspaceForm({ ...workspaceForm, report_audience: e.target.value })} />
+        <label>Workspace description</label>
+        <textarea value={workspaceForm.description || ''} onChange={(e) => setWorkspaceForm({ ...workspaceForm, description: e.target.value })} />
         <button className="primary" onClick={saveWorkspaceProfile}>Save Profile</button>
       </Panel>
       <Panel title="AI Provider">
@@ -674,7 +898,7 @@ function ReportCard({ report, onApprove }) {
   );
 }
 
-function ReviewCard({ item, onSave, onConfirm, onIgnore }) {
+function ReviewCard({ item, projects = [], onSave, onConfirm, onIgnore }) {
   const [draft, setDraft] = useState(item);
   useEffect(() => setDraft(item), [item]);
   return (
@@ -685,9 +909,13 @@ function ReviewCard({ item, onSave, onConfirm, onIgnore }) {
         <input type="date" value={draft.work_date || ''} onChange={(e) => setDraft({ ...draft, work_date: e.target.value })} />
         <input value={draft.area || ''} onChange={(e) => setDraft({ ...draft, area: e.target.value })} placeholder="Area" />
         <input value={draft.work_type || ''} onChange={(e) => setDraft({ ...draft, work_type: e.target.value })} placeholder="Work type" />
+        <select value={draft.project_id || ''} onChange={(e) => setDraft({ ...draft, project_id: e.target.value ? Number(e.target.value) : null })}>
+          <option value="">Unassigned</option>
+          {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+        </select>
       </div>
       <textarea value={draft.summary || ''} onChange={(e) => setDraft({ ...draft, summary: e.target.value })} />
-      <p className="muted">{item.area} - {item.work_type} - {item.work_date}</p>
+      <p className="muted">{item.project_name || 'Unassigned'} - {item.area} - {item.work_type} - {item.work_date}</p>
       <button onClick={() => onSave(draft)}>Save Edits</button>
       <button className="primary" onClick={() => onConfirm(item.id)}>Confirm</button>
       <button onClick={() => onIgnore(item.id)}>Ignore</button>
@@ -701,6 +929,7 @@ function WorkItemCard({ item }) {
       <div>
         <strong>{item.title}</strong>
         <p>{item.summary}</p>
+        <p className="muted">{item.project_name || 'Unassigned'}</p>
       </div>
       <span className="muted">{item.work_date} - {item.status}</span>
     </article>

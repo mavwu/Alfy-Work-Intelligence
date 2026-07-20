@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..bootstrap import ensure_defaults
 from ..db import get_db
-from ..models import GitCommit, Repository, WorkItem
+from ..models import AppSetting, GitCommit, Repository, WorkItem
 
 router = APIRouter()
 
@@ -36,7 +36,7 @@ def dashboard(db: Session = Depends(get_db)):
         "deliverables": sum(1 for item in items if legacy_or_generic_type(item.work_type, ["feature", "deliverable"])),
     }
     return {
-        "greeting_name": workspace.user_name,
+        "greeting_name": profile_display_name(db) or workspace.user_name,
         "this_week": {
             "work_days_logged": len({item.work_date for item in items}),
             "git_commits": commits,
@@ -81,3 +81,8 @@ def make_insight(items: list[WorkItem]) -> str | None:
 def legacy_or_generic_type(value: str | None, needles: list[str]) -> bool:
     lower = (value or "").lower()
     return any(needle in lower for needle in needles)
+
+
+def profile_display_name(db: Session) -> str:
+    setting = db.get(AppSetting, "profile_display_name")
+    return setting.value.strip() if setting and setting.value else ""

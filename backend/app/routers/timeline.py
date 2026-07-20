@@ -12,13 +12,15 @@ router = APIRouter()
 
 
 @router.get("/timeline")
-def timeline(status: str | None = None, area: str | None = None, db: Session = Depends(get_db)):
+def timeline(status: str | None = None, area: str | None = None, project_id: int | None = None, db: Session = Depends(get_db)):
     workspace = ensure_defaults(db)
     query = db.query(WorkItem).filter(WorkItem.workspace_id == workspace.id)
     if status:
         query = query.filter(WorkItem.status == status)
     if area:
         query = query.filter(WorkItem.area == area)
+    if project_id is not None:
+        query = query.filter(WorkItem.project_id == project_id)
     items = query.order_by(WorkItem.work_date.desc()).limit(500).all()
     grouped = defaultdict(list)
     for item in items:
@@ -33,6 +35,8 @@ def timeline(status: str | None = None, area: str | None = None, db: Session = D
                 "work_date": item.work_date,
                 "status": item.status,
                 "confidence": item.evidence_confidence,
+                "project_id": item.project_id,
+                "project_name": item.project.name if item.project else None,
             }
         )
     return [{"month": month, "items": entries} for month, entries in grouped.items()]
@@ -57,7 +61,17 @@ def evidence(db: Session = Depends(get_db)):
 
 @router.get("/evidence/relationships")
 def relationships(db: Session = Depends(get_db)):
-    rows = db.query(EvidenceRelationship).order_by(EvidenceRelationship.created_at.desc()).limit(200).all()
+    workspace = ensure_defaults(db)
+    evidence_ids = [row_id for (row_id,) in db.query(Evidence.id).filter(Evidence.workspace_id == workspace.id).all()]
+    if not evidence_ids:
+        return []
+    rows = (
+        db.query(EvidenceRelationship)
+        .filter(EvidenceRelationship.from_evidence_id.in_(evidence_ids), EvidenceRelationship.to_evidence_id.in_(evidence_ids))
+        .order_by(EvidenceRelationship.created_at.desc())
+        .limit(200)
+        .all()
+    )
     return [
         {
             "id": row.id,

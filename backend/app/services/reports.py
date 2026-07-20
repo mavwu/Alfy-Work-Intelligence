@@ -41,25 +41,27 @@ LEGACY_REPORT_TYPE_ALIASES = {
 ACCEPTED_REPORT_TYPES = set(REPORT_TYPES) | set(LEGACY_REPORT_TYPE_ALIASES)
 
 
-def evidence_for_period(db: Session, workspace_id: int, date_from: str, date_to: str):
+def evidence_for_period(db: Session, workspace_id: int, date_from: str, date_to: str, project_id: int | None = None):
     promoted_source_item_ids = promoted_work_item_ids(db)
-    confirmed = (
+    confirmed_query = (
         db.query(WorkItem)
         .filter(WorkItem.workspace_id == workspace_id)
         .filter(WorkItem.work_date >= date_from, WorkItem.work_date <= date_to)
         .filter(WorkItem.status == "CONFIRMED")
-        .order_by(WorkItem.work_date)
-        .all()
     )
+    if project_id is not None:
+        confirmed_query = confirmed_query.filter(WorkItem.project_id == project_id)
+    confirmed = confirmed_query.order_by(WorkItem.work_date).all()
     confirmed = [item for item in confirmed if item.id not in promoted_source_item_ids]
-    inferred = (
+    inferred_query = (
         db.query(WorkItem)
         .filter(WorkItem.workspace_id == workspace_id)
         .filter(WorkItem.work_date >= date_from, WorkItem.work_date <= date_to)
         .filter(WorkItem.status == "REVIEW")
-        .order_by(WorkItem.work_date)
-        .all()
     )
+    if project_id is not None:
+        inferred_query = inferred_query.filter(WorkItem.project_id == project_id)
+    inferred = inferred_query.order_by(WorkItem.work_date).all()
     return confirmed, inferred
 
 
@@ -72,13 +74,24 @@ def promoted_work_item_ids(db: Session) -> set[int]:
     return {row.work_item_id for row in evidence_rows if row.work_item_id}
 
 
-def generate_report(db: Session, workspace_id: int, report_type: str, date_from: str, date_to: str, include_inferred_ids: list[int] | None = None) -> GeneratedReport:
+def generate_report(
+    db: Session,
+    workspace_id: int,
+    report_type: str,
+    date_from: str,
+    date_to: str,
+    include_inferred_ids: list[int] | None = None,
+    project_id: int | None = None,
+) -> GeneratedReport:
     workspace = db.get(Workspace, workspace_id)
     workspace_name = workspace.name if workspace else "Current Workspace"
-    confirmed, _ = evidence_for_period(db, workspace_id, date_from, date_to)
+    confirmed, _ = evidence_for_period(db, workspace_id, date_from, date_to, project_id)
     included = list(confirmed)
     if include_inferred_ids:
-        included.extend(db.query(WorkItem).filter(WorkItem.id.in_(include_inferred_ids), WorkItem.workspace_id == workspace_id).all())
+        inferred_query = db.query(WorkItem).filter(WorkItem.id.in_(include_inferred_ids), WorkItem.workspace_id == workspace_id)
+        if project_id is not None:
+            inferred_query = inferred_query.filter(WorkItem.project_id == project_id)
+        included.extend(inferred_query.all())
     profile = db.query(ReportStyleProfile).filter(ReportStyleProfile.workspace_id == workspace_id).first()
     display_type = report_type_label(report_type)
     plan = build_report_plan(display_type, date_from, date_to, included)
@@ -87,6 +100,7 @@ def generate_report(db: Session, workspace_id: int, report_type: str, date_from:
     markdown, notes = validate_and_rewrite(generated or deterministic_report(display_type, date_from, date_to, included, profile, workspace_name), plan)
     report = GeneratedReport(
         workspace_id=workspace_id,
+        project_id=project_id,
         report_type=report_type,
         title=f"{display_type} - {date_from} to {date_to}",
         date_from=date_from,
@@ -299,7 +313,7 @@ def restore_report_revision(db: Session, report: GeneratedReport, revision: Repo
 
 
 def report_items_for_revision(db: Session, report: GeneratedReport) -> list[WorkItem]:
-    confirmed, _ = evidence_for_period(db, report.workspace_id, report.date_from, report.date_to)
+    confirmed, _ = evidence_for_period(db, report.workspace_id, report.date_from, report.date_to, report.project_id)
     return confirmed
 
 
