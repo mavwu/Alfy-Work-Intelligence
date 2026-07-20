@@ -62,6 +62,7 @@ def evidence_for_period(db: Session, workspace_id: int, date_from: str, date_to:
     if project_id is not None:
         inferred_query = inferred_query.filter(WorkItem.project_id == project_id)
     inferred = inferred_query.order_by(WorkItem.work_date).all()
+    attach_evidence_summaries(db, confirmed + inferred)
     return confirmed, inferred
 
 
@@ -132,7 +133,7 @@ def ai_report(
     provider = OllamaProvider()
     if not provider.health_check().get("available"):
         return None
-    evidence = "\n".join(f"- {item.work_date}: {item.title} ({item.work_type}) - {item.summary}" for item in items)
+    evidence = "\n".join(f"- {item.work_date}: {item.title} ({item.work_type}; {item.work_status or 'status unknown'}) - {item.summary}{general_item_suffix(item)}" for item in items)
     audience = profile.audience if profile and profile.audience else DEFAULT_REPORT_AUDIENCE
     prompt = f"""
 Create a grounded {report_type} for the workspace named {workspace_name}.
@@ -187,8 +188,8 @@ def deterministic_stakeholder_update(date_from: str, date_to: str, items: list[W
     lines.append(f"Here is a concise update on confirmed work for {workspace_name}:")
     lines.append("")
     for item in items[:6]:
-        lines.append(f"- {item.summary}")
-    pending = [item.pending_work for item in items if item.pending_work]
+        lines.append(f"- {item.summary}{general_item_suffix(item)}")
+    pending = [item.next_step or item.pending_work for item in items if item.next_step or item.pending_work]
     if pending:
         lines.extend(["", "Pending / next:", *[f"- {text}" for text in pending[:3]]])
     return "\n".join(lines)
@@ -315,6 +316,43 @@ def restore_report_revision(db: Session, report: GeneratedReport, revision: Repo
 def report_items_for_revision(db: Session, report: GeneratedReport) -> list[WorkItem]:
     confirmed, _ = evidence_for_period(db, report.workspace_id, report.date_from, report.date_to, report.project_id)
     return confirmed
+
+
+def attach_evidence_summaries(db: Session, items: list[WorkItem]):
+    item_ids = [item.id for item in items]
+    if not item_ids:
+        return
+    rows = (
+        db.query(Evidence)
+        .filter(Evidence.work_item_id.in_(item_ids), Evidence.archived_at.is_(None))
+        .order_by(Evidence.created_at.desc())
+        .all()
+    )
+    by_item: dict[int, list[Evidence]] = {}
+    for row in rows:
+        if row.work_item_id:
+            by_item.setdefault(row.work_item_id, []).append(row)
+    for item in items:
+        item.evidence_summaries = [
+            f"{row.evidence_type or row.source_type}: {row.title} - {row.summary}".strip(" -")
+            for row in by_item.get(item.id, [])[:5]
+        ]
+
+
+def general_item_suffix(item: WorkItem) -> str:
+    parts = []
+    if item.category:
+        parts.append(f"Category: {item.category}")
+    if item.priority and item.priority != "NORMAL":
+        parts.append(f"Priority: {item.priority}")
+    if item.outcome:
+        parts.append(f"Outcome: {item.outcome}")
+    if item.next_step:
+        parts.append(f"Next step: {item.next_step}")
+    evidence_summaries = getattr(item, "evidence_summaries", [])
+    if evidence_summaries:
+        parts.append("Evidence: " + " | ".join(evidence_summaries[:3]))
+    return (" " + " ".join(parts)) if parts else ""
 
 
 def add_markdown_runs(paragraph, text: str):

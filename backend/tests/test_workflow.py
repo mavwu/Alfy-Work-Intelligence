@@ -221,6 +221,142 @@ def test_work_item_project_assignment_validation_and_unassign(client):
     assert archived_assignment.status_code == 400
 
 
+def test_general_work_item_fields_are_separate_from_review_status(client):
+    created = client.post(
+        "/api/work-items",
+        json={
+            "title": "Prepare client invoice",
+            "summary": "Prepared an invoice and sent it for internal checking.",
+            "work_status": "IN_PROGRESS",
+            "work_type": "Administration",
+            "category": "Billing",
+            "priority": "HIGH",
+            "outcome": "Invoice draft prepared.",
+            "next_step": "Await approval before sending to client.",
+            "tags": ["client-requested", "awaiting-approval"],
+        },
+    )
+    assert created.status_code == 200
+    body = created.json()
+    assert body["status"] == "REVIEW"
+    assert body["work_status"] == "IN_PROGRESS"
+    assert body["priority"] == "HIGH"
+    assert body["category"] == "Billing"
+    assert body["tags"] == ["client-requested", "awaiting-approval"]
+
+    confirmed = client.post(f"/api/work-items/{body['id']}/confirm").json()
+    assert confirmed["status"] == "CONFIRMED"
+    assert confirmed["work_status"] == "IN_PROGRESS"
+
+    updated = client.put(f"/api/work-items/{body['id']}", json={"work_status": "COMPLETED", "priority": "URGENT"}).json()
+    assert updated["status"] == "CONFIRMED"
+    assert updated["work_status"] == "COMPLETED"
+    assert updated["priority"] == "URGENT"
+
+
+def test_non_technical_extraction_is_conservative_and_generic(client):
+    design = client.post(
+        "/api/work-logs",
+        json={"raw_text": "Met the client, reviewed the poster draft, recorded their wording changes and sent a revised version for approval."},
+    ).json()["extracted_items"][0]
+    assert design["work_type"] in {"Meeting", "Communication", "Design"}
+    assert design["work_status"] in {"IN_PROGRESS", "COMPLETED"}
+    assert "await" in (design["next_step"] or "").lower()
+    assert "approval" in " ".join(design["tags"])
+
+    support = client.post(
+        "/api/work-logs",
+        json={"raw_text": "Configured a staff workstation, installed required software, tested network access and documented the setup."},
+    ).json()["extracted_items"][0]
+    assert support["work_type"] == "Support"
+    assert support["work_status"] == "COMPLETED"
+    assert support["outcome"]
+
+    unresolved = client.post(
+        "/api/work-logs",
+        json={"raw_text": "Investigated why payment records did not match the spreadsheet totals but have not resolved the difference yet."},
+    ).json()["extracted_items"][0]
+    assert unresolved["work_status"] in {"BLOCKED", "IN_PROGRESS"}
+    assert unresolved["work_status"] != "COMPLETED"
+    assert not unresolved["outcome"]
+
+
+def test_manual_evidence_create_attach_detach_and_workspace_guards(client):
+    project = client.post("/api/projects", json={"name": "Client Website"}).json()
+    item = client.post(
+        "/api/work-items",
+        json={"title": "Homepage wording", "summary": "Updated homepage wording.", "project_id": project["id"]},
+    ).json()
+    meeting = client.post(
+        "/api/evidence",
+        json={
+            "evidence_type": "MEETING_NOTE",
+            "title": "Requirements meeting",
+            "summary": "Discussed booking flow and agreed next priorities.",
+            "work_item_id": item["id"],
+        },
+    )
+    assert meeting.status_code == 200
+    link = client.post(
+        "/api/evidence",
+        json={"evidence_type": "LINK", "title": "Production website", "summary": "Website reference.", "uri": "https://example.com", "work_item_id": item["id"]},
+    ).json()
+    file_ref = client.post(
+        "/api/evidence",
+        json={"evidence_type": "FILE_REFERENCE", "title": "Final report document", "local_path": r"C:\Documents\Reports\July Report.docx", "work_item_id": item["id"]},
+    ).json()
+    feedback = client.post(
+        "/api/evidence",
+        json={"evidence_type": "CLIENT_FEEDBACK", "title": "Client approved homepage", "summary": "Client approved the revised homepage through WhatsApp.", "project_id": project["id"]},
+    ).json()
+    assert link["uri"] == "https://example.com"
+    assert file_ref["local_path"].endswith("July Report.docx")
+    assert feedback["project_id"] == project["id"]
+
+    rows = client.get(f"/api/evidence?work_item_id={item['id']}").json()
+    assert len(rows) == 3
+    detached = client.post(f"/api/evidence/{link['id']}/detach").json()
+    assert detached["work_item_id"] is None
+    attached = client.post(f"/api/evidence/{link['id']}/attach", json={"work_item_id": item["id"]}).json()
+    assert attached["work_item_id"] == item["id"]
+    archived = client.delete(f"/api/evidence/{file_ref['id']}").json()
+    assert archived["archived_at"]
+
+    freelance = client.post("/api/workspaces", json={"name": "Freelance Work"}).json()
+    freelance_project = client.post("/api/projects", json={"workspace_id": freelance["id"], "name": "Other Project"}).json()
+    bad_project = client.post("/api/evidence", json={"evidence_type": "MANUAL_NOTE", "title": "Bad", "project_id": freelance_project["id"]})
+    assert bad_project.status_code == 400
+
+
+def test_general_evidence_reaches_search_and_reports_without_completion_claim(client):
+    item = client.post(
+        "/api/work-items",
+        json={
+            "title": "Client website revision",
+            "summary": "Sent a revised homepage version for approval.",
+            "work_type": "Design",
+            "work_status": "IN_PROGRESS",
+            "next_step": "Await client approval.",
+            "work_date": "2026-07-10",
+        },
+    ).json()
+    client.post(f"/api/work-items/{item['id']}/confirm")
+    evidence = client.post(
+        "/api/evidence",
+        json={"evidence_type": "CLIENT_FEEDBACK", "title": "WhatsApp feedback", "summary": "Client requested wording changes.", "work_item_id": item["id"]},
+    )
+    assert evidence.status_code == 200
+    assert client.get("/api/search?q=WhatsApp").json()
+
+    report = client.post(
+        "/api/reports",
+        json={"report_type": "Weekly Work Report", "date_from": "2026-07-01", "date_to": "2026-07-31"},
+    ).json()
+    draft = report["draft_markdown"].lower()
+    assert "await client approval" in draft
+    assert "client approved" not in draft
+
+
 def test_project_filtered_reports_and_timeline(client):
     project = client.post("/api/projects", json={"name": "Client Website"}).json()
     included = client.post(

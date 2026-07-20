@@ -88,6 +88,31 @@ Evidence:
 
 def deterministic_answer(db: Session, workspace_id: int, question: str, retrieved: list[dict]) -> str:
     lower = question.lower()
+    if "blocked" in lower:
+        items = (
+            db.query(WorkItem)
+            .filter(WorkItem.workspace_id == workspace_id, WorkItem.work_status == "BLOCKED")
+            .order_by(WorkItem.work_date.desc())
+            .limit(20)
+            .all()
+        )
+        if items:
+            bullets = "\n".join(f"- {item.work_date}: {item.title} - {item.next_step or item.pending_work or item.summary}" for item in items)
+            return f"Blocked work items currently stored in this workspace:\n\n{bullets}"
+        return "I do not have blocked work items recorded in this workspace."
+    if "no evidence" in lower or "without evidence" in lower:
+        items = (
+            db.query(WorkItem)
+            .filter(WorkItem.workspace_id == workspace_id)
+            .filter(~WorkItem.evidence_items.any())
+            .order_by(WorkItem.work_date.desc())
+            .limit(20)
+            .all()
+        )
+        if items:
+            bullets = "\n".join(f"- {item.work_date}: {item.title}" for item in items)
+            return f"Work items without attached evidence:\n\n{bullets}"
+        return "Every stored work item I checked has attached evidence."
     if "this week" in lower or "week" in lower:
         today = date.today()
         week_start = today - timedelta(days=today.weekday())
@@ -99,10 +124,17 @@ def deterministic_answer(db: Session, workspace_id: int, question: str, retrieve
             .limit(20)
             .all()
         )
+        completion_question = "complete" in lower or "completed" in lower
+        if completion_question:
+            completed_items = [item for item in items if item.work_status == "COMPLETED"]
+            if completed_items:
+                items = completed_items
         if items:
             bullets = "\n".join(f"- {item.work_date}: {item.title} - {item.summary}" for item in items)
-            return f"Based on confirmed work items currently stored, your recent work includes:\n\n{bullets}"
-        return "I do not have confirmed work items for this week yet. Review and confirm inferred work, or add a work log for this week."
+            if completion_question and not all(item.work_status == "COMPLETED" for item in items):
+                return f"I do not have matching records explicitly marked completed, but these confirmed work records match this week:\n\n{bullets}"
+            return f"Based on confirmed work items currently stored, your recent work records include:\n\n{bullets}"
+        return "I do not have matching confirmed work items for this week yet. Review and confirm inferred work, or add a work log for this week."
     since = since_month_date(lower)
     if since:
         items = (

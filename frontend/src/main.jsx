@@ -10,7 +10,9 @@ import {
   History,
   Home,
   Import,
+  Link2,
   MessageSquare,
+  Paperclip,
   Plus,
   RefreshCw,
   Search,
@@ -30,6 +32,11 @@ const navItems = [
   ['Imports', Import],
   ['Settings', Settings],
 ];
+
+const workTypes = ['General Work', 'Feature / Deliverable', 'Issue Resolution', 'Investigation / Research', 'Meeting', 'Communication', 'Administration', 'Design', 'Documentation', 'Testing', 'Deployment', 'Support', 'Training', 'Field Work', 'Other', 'Feature Work', 'Bug Fix', 'Technical Investigation', 'Work Log'];
+const workStatuses = ['PLANNED', 'IN_PROGRESS', 'BLOCKED', 'COMPLETED', 'CANCELLED'];
+const priorities = ['LOW', 'NORMAL', 'HIGH', 'URGENT'];
+const evidenceTypes = ['MANUAL_NOTE', 'LINK', 'FILE_REFERENCE', 'DOCUMENT', 'IMAGE_REFERENCE', 'EMAIL_REFERENCE', 'MEETING_NOTE', 'TEST_RESULT', 'DEPLOYMENT', 'CLIENT_FEEDBACK', 'GIT_COMMIT', 'GIT_WORKING_TREE', 'IMPORTED_DOCUMENT', 'OTHER'];
 
 function App() {
   const [view, setView] = useState('Dashboard');
@@ -500,14 +507,33 @@ function WorkLog({ workspace }) {
   const [items, setItems] = useState([]);
   const [projects, setProjects] = useState([]);
   const [projectId, setProjectId] = useState('');
+  const [advanced, setAdvanced] = useState({
+    title: '',
+    summary: '',
+    work_status: 'IN_PROGRESS',
+    category: '',
+    work_type: 'General Work',
+    priority: 'NORMAL',
+    work_date: new Date().toISOString().slice(0, 10),
+    outcome: '',
+    next_step: '',
+    tags: '',
+  });
   useEffect(() => {
     api('/api/projects').then(setProjects);
   }, [workspace?.id]);
   useEffect(() => { api('/api/work-items?status=REVIEW').then(setItems); }, [result, workspace?.id]);
   async function submit() {
-    const next = await api('/api/work-logs', { method: 'POST', body: { raw_text: rawText, project_id: projectId ? Number(projectId) : null } });
+    const payload = {
+      raw_text: rawText,
+      project_id: projectId ? Number(projectId) : null,
+      ...Object.fromEntries(Object.entries(advanced).filter(([, value]) => String(value || '').trim())),
+      tags: advanced.tags ? advanced.tags.split(',').map((tag) => tag.trim()).filter(Boolean) : undefined,
+    };
+    const next = await api('/api/work-logs', { method: 'POST', body: payload });
     setResult(next);
     setRawText('');
+    setAdvanced({ ...advanced, title: '', summary: '', outcome: '', next_step: '', tags: '' });
   }
   async function confirm(id) {
     await api(`/api/work-items/${id}/confirm`, { method: 'POST' });
@@ -529,6 +555,23 @@ function WorkLog({ workspace }) {
         {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
       </select>
       <textarea className="work-box" placeholder="What did you work on?" value={rawText} onChange={(event) => setRawText(event.target.value)} />
+      <details className="advanced-box">
+        <summary>Optional details</summary>
+        <div className="form-grid">
+          <input placeholder="Title override" value={advanced.title} onChange={(e) => setAdvanced({ ...advanced, title: e.target.value })} />
+          <input placeholder="Category" value={advanced.category} onChange={(e) => setAdvanced({ ...advanced, category: e.target.value })} />
+          <select value={advanced.work_status} onChange={(e) => setAdvanced({ ...advanced, work_status: e.target.value })}>{workStatuses.map((status) => <option key={status}>{status}</option>)}</select>
+          <select value={advanced.work_type} onChange={(e) => setAdvanced({ ...advanced, work_type: e.target.value })}>{workTypes.map((type) => <option key={type}>{type}</option>)}</select>
+          <select value={advanced.priority} onChange={(e) => setAdvanced({ ...advanced, priority: e.target.value })}>{priorities.map((priority) => <option key={priority}>{priority}</option>)}</select>
+          <input type="date" value={advanced.work_date} onChange={(e) => setAdvanced({ ...advanced, work_date: e.target.value })} />
+          <input placeholder="Tags, comma separated" value={advanced.tags} onChange={(e) => setAdvanced({ ...advanced, tags: e.target.value })} />
+        </div>
+        <textarea placeholder="Summary override" value={advanced.summary} onChange={(e) => setAdvanced({ ...advanced, summary: e.target.value })} />
+        <div className="form-grid">
+          <textarea placeholder="Outcome" value={advanced.outcome} onChange={(e) => setAdvanced({ ...advanced, outcome: e.target.value })} />
+          <textarea placeholder="Next step" value={advanced.next_step} onChange={(e) => setAdvanced({ ...advanced, next_step: e.target.value })} />
+        </div>
+      </details>
       <button className="primary" disabled={!rawText.trim()} onClick={submit}><Plus size={18} />Extract Work Items</button>
       {result && <Notice>{result.extracted_items.length} review item(s) created via {result.analysis_mode}. {result.analysis_model ? `Model: ${result.analysis_model}.` : ''}</Notice>}
       <h2>Review Queue</h2>
@@ -602,11 +645,19 @@ function TimelinePage({ workspace }) {
   const [results, setResults] = useState([]);
   const [projects, setProjects] = useState([]);
   const [projectId, setProjectId] = useState('');
+  const [workStatus, setWorkStatus] = useState('');
+  const [workType, setWorkType] = useState('');
+  const [priority, setPriority] = useState('');
   useEffect(() => { api('/api/projects').then(setProjects); }, [workspace?.id]);
   useEffect(() => {
-    const suffix = projectId ? `?project_id=${projectId}` : '';
+    const params = new URLSearchParams();
+    if (projectId) params.set('project_id', projectId);
+    if (workStatus) params.set('work_status', workStatus);
+    if (workType) params.set('work_type', workType);
+    if (priority) params.set('priority', priority);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
     api(`/api/timeline${suffix}`).then(setTimeline);
-  }, [projectId, workspace?.id]);
+  }, [projectId, workStatus, workType, priority, workspace?.id]);
   async function search() {
     if (query.trim()) setResults(await api(`/api/search?q=${encodeURIComponent(query)}`));
   }
@@ -621,6 +672,18 @@ function TimelinePage({ workspace }) {
         <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
           <option value="">All projects</option>
           {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+        </select>
+        <select value={workStatus} onChange={(event) => setWorkStatus(event.target.value)}>
+          <option value="">All progress states</option>
+          {workStatuses.map((status) => <option key={status}>{status}</option>)}
+        </select>
+        <select value={workType} onChange={(event) => setWorkType(event.target.value)}>
+          <option value="">All work types</option>
+          {workTypes.map((type) => <option key={type}>{type}</option>)}
+        </select>
+        <select value={priority} onChange={(event) => setPriority(event.target.value)}>
+          <option value="">All priorities</option>
+          {priorities.map((level) => <option key={level}>{level}</option>)}
         </select>
       </div>
       {results.length > 0 && <Panel title="Search Results">{results.map((row) => <EvidenceRow key={`${row.content_type}-${row.content_id}`} row={row} />)}</Panel>}
@@ -901,25 +964,128 @@ function ReportCard({ report, onApprove }) {
 function ReviewCard({ item, projects = [], onSave, onConfirm, onIgnore }) {
   const [draft, setDraft] = useState(item);
   useEffect(() => setDraft(item), [item]);
+  const draftTags = Array.isArray(draft.tags) ? draft.tags.join(', ') : (draft.tags || '');
   return (
     <article className="card wide">
-      <div className="row"><h3>{item.title}</h3><StatusPill label={item.evidence_confidence} /></div>
+      <div className="row"><h3>{item.title}</h3><StatusPill label={`${item.evidence_confidence} / ${item.work_status || 'IN_PROGRESS'}`} /></div>
       <div className="form-grid">
         <input value={draft.title || ''} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
         <input type="date" value={draft.work_date || ''} onChange={(e) => setDraft({ ...draft, work_date: e.target.value })} />
         <input value={draft.area || ''} onChange={(e) => setDraft({ ...draft, area: e.target.value })} placeholder="Area" />
-        <input value={draft.work_type || ''} onChange={(e) => setDraft({ ...draft, work_type: e.target.value })} placeholder="Work type" />
+        <input value={draft.category || ''} onChange={(e) => setDraft({ ...draft, category: e.target.value })} placeholder="Category" />
+        <select value={draft.work_type || 'General Work'} onChange={(e) => setDraft({ ...draft, work_type: e.target.value })}>{workTypes.map((type) => <option key={type}>{type}</option>)}</select>
+        <select value={draft.work_status || 'IN_PROGRESS'} onChange={(e) => setDraft({ ...draft, work_status: e.target.value })}>{workStatuses.map((status) => <option key={status}>{status}</option>)}</select>
+        <select value={draft.priority || 'NORMAL'} onChange={(e) => setDraft({ ...draft, priority: e.target.value })}>{priorities.map((priority) => <option key={priority}>{priority}</option>)}</select>
         <select value={draft.project_id || ''} onChange={(e) => setDraft({ ...draft, project_id: e.target.value ? Number(e.target.value) : null })}>
           <option value="">Unassigned</option>
           {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
         </select>
+        <input value={draftTags} onChange={(e) => setDraft({ ...draft, tags: e.target.value.split(',').map((tag) => tag.trim()).filter(Boolean) })} placeholder="Tags" />
       </div>
       <textarea value={draft.summary || ''} onChange={(e) => setDraft({ ...draft, summary: e.target.value })} />
-      <p className="muted">{item.project_name || 'Unassigned'} - {item.area} - {item.work_type} - {item.work_date}</p>
+      <div className="form-grid">
+        <textarea placeholder="Outcome" value={draft.outcome || ''} onChange={(e) => setDraft({ ...draft, outcome: e.target.value })} />
+        <textarea placeholder="Next step" value={draft.next_step || ''} onChange={(e) => setDraft({ ...draft, next_step: e.target.value })} />
+      </div>
+      <details className="advanced-box">
+        <summary>Extended details</summary>
+        <div className="form-grid">
+          <textarea placeholder="Findings / observations" value={draft.findings || ''} onChange={(e) => setDraft({ ...draft, findings: e.target.value })} />
+          <textarea placeholder="Actions taken" value={draft.fixes || ''} onChange={(e) => setDraft({ ...draft, fixes: e.target.value })} />
+          <textarea placeholder="Challenges / blockers" value={draft.challenges || ''} onChange={(e) => setDraft({ ...draft, challenges: e.target.value })} />
+          <textarea placeholder="Legacy pending work" value={draft.pending_work || ''} onChange={(e) => setDraft({ ...draft, pending_work: e.target.value })} />
+        </div>
+      </details>
+      <p className="muted">{item.project_name || 'Unassigned'} - {item.category || item.area || 'General'} - {item.work_type} - {item.priority || 'NORMAL'} - evidence {item.evidence_count || 0}</p>
       <button onClick={() => onSave(draft)}>Save Edits</button>
       <button className="primary" onClick={() => onConfirm(item.id)}>Confirm</button>
       <button onClick={() => onIgnore(item.id)}>Ignore</button>
+      <EvidencePanel workItem={item} projects={projects} />
     </article>
+  );
+}
+
+function EvidencePanel({ workItem, projects = [] }) {
+  const [rows, setRows] = useState([]);
+  const [available, setAvailable] = useState([]);
+  const [attachId, setAttachId] = useState('');
+  const [form, setForm] = useState({
+    evidence_type: 'MANUAL_NOTE',
+    title: '',
+    summary: '',
+    uri: '',
+    local_path: '',
+    external_ref: '',
+    occurred_at: '',
+    project_id: workItem.project_id || '',
+  });
+  useEffect(() => {
+    loadEvidence();
+    api('/api/evidence').then((items) => setAvailable(items.filter((row) => !row.work_item_id && row.is_manual))).catch(() => setAvailable([]));
+  }, [workItem.id]);
+  async function loadEvidence() {
+    setRows(await api(`/api/evidence?work_item_id=${workItem.id}`));
+  }
+  async function addEvidence() {
+    if (!form.title.trim()) return;
+    const payload = {
+      ...form,
+      work_item_id: workItem.id,
+      project_id: form.project_id ? Number(form.project_id) : workItem.project_id || null,
+      occurred_at: form.occurred_at ? new Date(form.occurred_at).toISOString() : null,
+    };
+    await api('/api/evidence', { method: 'POST', body: payload });
+    setForm({ evidence_type: 'MANUAL_NOTE', title: '', summary: '', uri: '', local_path: '', external_ref: '', occurred_at: '', project_id: workItem.project_id || '' });
+    await loadEvidence();
+  }
+  async function attachEvidence() {
+    if (!attachId) return;
+    await api(`/api/evidence/${attachId}/attach`, { method: 'POST', body: { work_item_id: workItem.id } });
+    setAttachId('');
+    await loadEvidence();
+  }
+  async function detachEvidence(row) {
+    await api(`/api/evidence/${row.id}/detach`, { method: 'POST' });
+    await loadEvidence();
+  }
+  return (
+    <details className="evidence-panel">
+      <summary><Paperclip size={16} />Evidence ({rows.length})</summary>
+      {rows.length ? rows.map((row) => (
+        <div className="timeline-item" key={row.id}>
+          <div>
+            <strong>{row.title}</strong>
+            <p>{row.summary || row.uri || row.local_path || row.external_ref}</p>
+            {(row.uri || row.local_path) && <small className="muted">{row.uri || row.local_path}</small>}
+          </div>
+          <span className="muted">{row.evidence_type}<button onClick={() => detachEvidence(row)}>Detach</button></span>
+        </div>
+      )) : <Empty text="No evidence attached yet." />}
+      <div className="form-grid">
+        <select value={form.evidence_type} onChange={(e) => setForm({ ...form, evidence_type: e.target.value })}>{evidenceTypes.map((type) => <option key={type}>{type}</option>)}</select>
+        <input placeholder="Evidence title" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+        <input type="date" value={form.occurred_at} onChange={(e) => setForm({ ...form, occurred_at: e.target.value })} />
+        <select value={form.project_id || ''} onChange={(e) => setForm({ ...form, project_id: e.target.value })}>
+          <option value="">Workspace evidence</option>
+          {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+        </select>
+        <input placeholder="URL" value={form.uri} onChange={(e) => setForm({ ...form, uri: e.target.value })} />
+        <input placeholder="Local path" value={form.local_path} onChange={(e) => setForm({ ...form, local_path: e.target.value })} />
+        <input placeholder="External reference" value={form.external_ref} onChange={(e) => setForm({ ...form, external_ref: e.target.value })} />
+      </div>
+      <textarea placeholder="Description" value={form.summary} onChange={(e) => setForm({ ...form, summary: e.target.value })} />
+      {form.evidence_type === 'FILE_REFERENCE' && <p className="muted">Local file references point to the current path and may stop working if the file is moved.</p>}
+      <button onClick={addEvidence}><Plus size={16} />Add Evidence</button>
+      {available.length > 0 && (
+        <div className="mini-form">
+          <select value={attachId} onChange={(e) => setAttachId(e.target.value)}>
+            <option value="">Attach existing evidence</option>
+            {available.map((row) => <option key={row.id} value={row.id}>{row.title}</option>)}
+          </select>
+          <button onClick={attachEvidence}><Link2 size={16} />Attach</button>
+        </div>
+      )}
+    </details>
   );
 }
 
@@ -929,9 +1095,9 @@ function WorkItemCard({ item }) {
       <div>
         <strong>{item.title}</strong>
         <p>{item.summary}</p>
-        <p className="muted">{item.project_name || 'Unassigned'}</p>
+        <p className="muted">{item.project_name || 'Unassigned'} - {item.category || item.area || item.work_type || 'General Work'}{item.outcome ? ` - ${item.outcome}` : ''}</p>
       </div>
-      <span className="muted">{item.work_date} - {item.status}</span>
+      <span className="muted">{item.work_date} - {item.status} - {item.work_status || 'IN_PROGRESS'}{item.evidence_count ? ` - evidence ${item.evidence_count}` : ''}</span>
     </article>
   );
 }

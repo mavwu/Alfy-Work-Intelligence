@@ -139,8 +139,13 @@ def serialize_item(item):
         "summary": item.summary,
         "work_date": item.work_date,
         "status": item.status,
+        "work_status": item.work_status,
         "area": item.area,
         "work_type": item.work_type,
+        "category": item.category,
+        "priority": item.priority,
+        "outcome": item.outcome,
+        "next_step": item.next_step,
         "project_id": item.project_id,
         "project_name": item.project.name if getattr(item, "project", None) else None,
     }

@@ -77,14 +77,17 @@ Return JSON only. Do not write a professional report.
 
 Rules:
 - Treat the input as a messy local work note from a person recording professional work.
+- The work may be technical or non-technical: meetings, client communication, design, administration, ICT support, training, testing, field work, deployment, research, documentation, or software engineering.
 - Split multiple unrelated topics into multiple events.
 - Preserve chronology when the note changes understanding over time.
 - Distinguish investigation from implementation.
+- Distinguish awaiting approval from completion.
+- Distinguish preparing or sending something from the client approving it.
 - Distinguish attempted fix from successful fix.
 - Distinguish observed configuration from confirmed working feature.
 - Distinguish requirement clarification from work completion.
 - If the text says "still need to confirm", "haven't checked", "not yet", or similar, put it in open questions or pending actions and do not mark it confirmed.
-- Do not invent infrastructure, services, endpoints, queues, or databases that are not evidenced in the note.
+- Do not invent evidence, client approval, infrastructure, services, endpoints, queues, or databases that are not evidenced in the note.
 - Use concise factual statements.
 
 Status guidance:
@@ -197,6 +200,7 @@ Focus on work meaning:
 - observed configuration vs confirmed capability
 - requirement clarification vs completion
 - pending verification vs resolved work
+- meeting, communication, design, administration, support, training, testing, deployment, and research when the note is not about software engineering
 
 Input note:
 {raw_text[:12000]}

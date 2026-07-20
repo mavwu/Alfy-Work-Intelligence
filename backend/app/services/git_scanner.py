@@ -126,6 +126,8 @@ def scan_repository(db: Session, repository_id: int, date_from: str | None = Non
             evidence = Evidence(
                 workspace_id=repo.workspace_id,
                 work_item_id=work_item.id,
+                project_id=work_item.project_id,
+                evidence_type="GIT_COMMIT",
                 source_type="GIT_COMMIT",
                 source_id=str(commit.id),
                 title=f"{repo.name}: {commit.subject}",
@@ -165,6 +167,7 @@ def scan_repository(db: Session, repository_id: int, date_from: str | None = Non
         if status.strip():
             evidence = Evidence(
                 workspace_id=repo.workspace_id,
+                evidence_type="GIT_WORKING_TREE",
                 source_type="GIT_WORKING_TREE",
                 source_id=str(repo.id),
                 title=f"{repo.name}: working tree changes",
@@ -227,6 +230,8 @@ def create_git_work_item(db: Session, repo: Repository, commit: GitCommit, parse
         summary=summary[:1200],
         work_date=work_date,
         status="REVIEW",
+        work_status="IN_PROGRESS",
+        priority="NORMAL",
         evidence_confidence="INFERRED",
         related_repository_id=repo.id,
         extraction_confidence=0.55,

@@ -122,6 +122,14 @@ class WorkItem(Base):
     summary: Mapped[str] = mapped_column(Text)
     work_date: Mapped[str] = mapped_column(String(20), index=True)
     status: Mapped[str] = mapped_column(String(40), default="REVIEW")
+    work_status: Mapped[str | None] = mapped_column(String(40), default="IN_PROGRESS")
+    category: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    priority: Mapped[str | None] = mapped_column(String(30), default="NORMAL")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_step: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tags: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_confidence: Mapped[str] = mapped_column(String(30), default="INFERRED")
     challenges: Mapped[str | None] = mapped_column(Text)
     findings: Mapped[str | None] = mapped_column(Text)
@@ -134,6 +142,7 @@ class WorkItem(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
 
     project: Mapped["Project | None"] = relationship()
+    evidence_items: Mapped[list["Evidence"]] = relationship(back_populates="work_item")
 
 
 class Evidence(Base):
@@ -141,14 +150,26 @@ class Evidence(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
     work_item_id: Mapped[int | None] = mapped_column(ForeignKey("work_items.id"), nullable=True, index=True)
+    evidence_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     source_type: Mapped[str] = mapped_column(String(40))
     source_id: Mapped[str | None] = mapped_column(String(120))
     title: Mapped[str] = mapped_column(String(240))
     summary: Mapped[str] = mapped_column(Text)
+    uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    local_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    external_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_system: Mapped[str | None] = mapped_column(String(120), nullable=True)
     confidence: Mapped[str] = mapped_column(String(30), default="INFERRED")
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_manual: Mapped[bool] = mapped_column(Boolean, default=False)
     occurred_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    project: Mapped["Project | None"] = relationship()
+    work_item: Mapped["WorkItem | None"] = relationship(back_populates="evidence_items")
 
 
 class EvidenceRelationship(Base):

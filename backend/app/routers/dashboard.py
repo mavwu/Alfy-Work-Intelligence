@@ -45,10 +45,20 @@ def dashboard(db: Session = Depends(get_db)):
             "bugs_resolved": types["issues"],
             "investigations": types["investigations"],
             "features_worked_on": types["deliverables"],
-            "pending_items": sum(1 for item in items if item.pending_work),
+            "pending_items": sum(1 for item in items if item.pending_work or item.next_step or item.work_status in {"BLOCKED", "IN_PROGRESS"}),
         },
         "recent_work": [
-            {"id": item.id, "title": item.title, "summary": item.summary, "work_date": item.work_date, "status": item.status}
+            {
+                "id": item.id,
+                "title": item.title,
+                "summary": item.summary,
+                "work_date": item.work_date,
+                "status": item.status,
+                "work_status": item.work_status,
+                "category": item.category,
+                "priority": item.priority,
+                "outcome": item.outcome,
+            }
             for item in sorted(items, key=lambda item: item.work_date, reverse=True)[:8]
         ],
         "repository_health": [

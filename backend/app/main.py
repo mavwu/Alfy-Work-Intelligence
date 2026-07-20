@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .bootstrap import ensure_defaults
 from .db import SessionLocal, init_db
-from .routers import chat, dashboard, imports, projects, repositories, reports, system, timeline, work
+from .routers import chat, dashboard, evidence, imports, projects, repositories, reports, system, timeline, work
 
 app = FastAPI(title="Alfy Work Intelligence", version="0.1.0")
 
@@ -20,6 +20,7 @@ app.include_router(system.router, prefix="/api", tags=["system"])
 app.include_router(projects.router, prefix="/api", tags=["projects"])
 app.include_router(repositories.router, prefix="/api", tags=["repositories"])
 app.include_router(work.router, prefix="/api", tags=["work"])
+app.include_router(evidence.router, prefix="/api", tags=["evidence"])
 app.include_router(imports.router, prefix="/api", tags=["imports"])
 app.include_router(timeline.router, prefix="/api", tags=["timeline"])
 app.include_router(reports.router, prefix="/api", tags=["reports"])

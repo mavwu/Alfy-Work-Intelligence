@@ -160,6 +160,32 @@ def event_from_item(item: WorkItem) -> SemanticEvent:
             )
         )
 
+    if item.outcome and not event.findings and not contains_uncertainty(item.outcome):
+        event.findings.append(
+            AtomicFact(
+                fact_id=f"{item.id}:outcome:1",
+                fact_type="FINDING",
+                subject=subject,
+                statement=clean_sentence(item.outcome),
+                certainty=item.evidence_confidence or "CONFIRMED",
+                status="OBSERVED",
+                evidence_refs=[item.id],
+            )
+        )
+
+    if item.next_step and not event.pending_actions:
+        event.pending_actions.append(
+            AtomicFact(
+                fact_id=f"{item.id}:next:1",
+                fact_type="PENDING_ACTION",
+                subject=subject,
+                statement=clean_sentence(item.next_step),
+                certainty="CONFIRMED",
+                status="PENDING",
+                evidence_refs=[item.id],
+            )
+        )
+
     if not event.actions_performed:
         event.actions_performed.append(
             AtomicFact(
@@ -173,7 +199,10 @@ def event_from_item(item: WorkItem) -> SemanticEvent:
             )
         )
 
-    event.current_status = "ONGOING" if event.open_questions or event.pending_actions else "COMPLETED"
+    if getattr(item, "work_status", None) in {"BLOCKED", "IN_PROGRESS", "PLANNED"}:
+        event.current_status = item.work_status
+    else:
+        event.current_status = "ONGOING" if event.open_questions or event.pending_actions else "COMPLETED"
     return event
 
 
@@ -317,7 +346,23 @@ def all_event_facts(event: SemanticEvent) -> list[AtomicFact]:
 
 
 def joined_evidence_text(item: WorkItem) -> str:
-    return " ".join(part for part in [item.summary, item.findings, item.fixes, item.pending_work, item.challenges] if part)
+    return " ".join(
+        part
+        for part in [
+            item.summary,
+            item.category,
+            item.work_type,
+            item.work_status,
+            item.outcome,
+            item.next_step,
+            item.findings,
+            item.fixes,
+            item.pending_work,
+            item.challenges,
+            " ".join(getattr(item, "evidence_summaries", []) or []),
+        ]
+        if part
+    )
 
 
 def infer_event_subject(item: WorkItem, lower: str) -> str:
@@ -333,6 +378,14 @@ def action_statement_for(item: WorkItem, lower: str) -> str | None:
         return "Inspected dashboard notification configuration as part of the company-wide notification investigation."
     if "checking" in lower or "investigat" in lower or "checked" in lower:
         return f"Investigated {infer_event_subject(item, lower).lower()}."
+    if item.work_type == "Meeting":
+        return f"Attended or documented {infer_event_subject(item, lower).lower()}."
+    if item.work_type == "Communication":
+        return f"Handled communication for {infer_event_subject(item, lower).lower()}."
+    if item.work_type == "Support":
+        return f"Provided support for {infer_event_subject(item, lower).lower()}."
+    if item.work_type in {"Design", "Administration", "Documentation", "Training", "Field Work", "Testing", "Deployment"}:
+        return f"Worked on {infer_event_subject(item, lower).lower()}."
     if "implemented" in lower or "built" in lower:
         return f"Implemented {infer_event_subject(item, lower).lower()}."
     return None
@@ -341,6 +394,8 @@ def action_statement_for(item: WorkItem, lower: str) -> str | None:
 def generic_action_statement(item: WorkItem, lower: str) -> str:
     if item.work_type and "bug" in item.work_type.lower():
         return f"Addressed {infer_event_subject(item, lower).lower()}."
+    if item.work_status in {"BLOCKED", "IN_PROGRESS", "PLANNED"}:
+        return f"Worked on {infer_event_subject(item, lower).lower()} with progress status {item.work_status.replace('_', ' ').lower()}."
     return f"Worked on {infer_event_subject(item, lower).lower()}."
 
 
@@ -356,7 +411,7 @@ def open_question_statement_for(lower: str) -> str | None:
     if ("broadcast notification flow" in lower or "broadcast" in lower) and pending_markers(lower):
         return "The existence and operation of a company-wide broadcast notification flow has not yet been confirmed."
     if pending_markers(lower):
-        return "A related technical capability remains unconfirmed."
+        return "A related work item remains unconfirmed."
     return None
 
 

@@ -12,7 +12,15 @@ router = APIRouter()
 
 
 @router.get("/timeline")
-def timeline(status: str | None = None, area: str | None = None, project_id: int | None = None, db: Session = Depends(get_db)):
+def timeline(
+    status: str | None = None,
+    area: str | None = None,
+    project_id: int | None = None,
+    work_status: str | None = None,
+    work_type: str | None = None,
+    priority: str | None = None,
+    db: Session = Depends(get_db),
+):
     workspace = ensure_defaults(db)
     query = db.query(WorkItem).filter(WorkItem.workspace_id == workspace.id)
     if status:
@@ -21,6 +29,12 @@ def timeline(status: str | None = None, area: str | None = None, project_id: int
         query = query.filter(WorkItem.area == area)
     if project_id is not None:
         query = query.filter(WorkItem.project_id == project_id)
+    if work_status:
+        query = query.filter(WorkItem.work_status == work_status)
+    if work_type:
+        query = query.filter(WorkItem.work_type == work_type)
+    if priority:
+        query = query.filter(WorkItem.priority == priority)
     items = query.order_by(WorkItem.work_date.desc()).limit(500).all()
     grouped = defaultdict(list)
     for item in items:
@@ -34,9 +48,15 @@ def timeline(status: str | None = None, area: str | None = None, project_id: int
                 "summary": item.summary,
                 "work_date": item.work_date,
                 "status": item.status,
+                "work_status": item.work_status,
+                "category": item.category,
+                "priority": item.priority,
+                "outcome": item.outcome,
+                "next_step": item.next_step,
                 "confidence": item.evidence_confidence,
                 "project_id": item.project_id,
                 "project_name": item.project.name if item.project else None,
+                "evidence_count": len(item.evidence_items),
             }
         )
     return [{"month": month, "items": entries} for month, entries in grouped.items()]

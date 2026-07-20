@@ -18,10 +18,16 @@ from .semantic_extraction import (
 class ExtractedWorkItem(BaseModel):
     title: str
     area: str | None = None
-    work_type: str | None = "Work Log"
+    work_type: str | None = "General Work"
     summary: str
     work_date: str = Field(default_factory=lambda: date.today().isoformat())
     status: str | None = "REVIEW"
+    work_status: str | None = "IN_PROGRESS"
+    category: str | None = None
+    priority: str | None = "NORMAL"
+    outcome: str | None = None
+    next_step: str | None = None
+    tags: list[str] = Field(default_factory=list)
     challenges: str | None = None
     findings: str | None = None
     fixes: str | None = None
@@ -87,6 +93,7 @@ def event_to_work_item(event: SemanticEventSchema, raw_text: str, analysis_mode:
     title = infer_title_from_event(event, summary)
     area = infer_area(summary.lower())
     work_type = infer_work_type(summary.lower(), event)
+    work_status = infer_work_status(summary.lower(), event)
     findings = join_unique([fact.statement for fact in event.findings])
     fixes = join_unique(
         [
@@ -97,6 +104,8 @@ def event_to_work_item(event: SemanticEventSchema, raw_text: str, analysis_mode:
     )
     pending_work = join_unique([fact.statement for fact in event.open_questions + event.pending_actions])
     challenges = join_unique([fact.statement for fact in event.pending_actions] or [fact.statement for fact in event.open_questions])
+    outcome = infer_outcome(summary, event, work_status)
+    next_step = infer_next_step(pending_work, summary, work_status)
     confidence = 0.72 if analysis_mode == "OLLAMA" else 0.45
     return {
         "title": title,
@@ -105,6 +114,12 @@ def event_to_work_item(event: SemanticEventSchema, raw_text: str, analysis_mode:
         "summary": summary,
         "work_date": date.today().isoformat(),
         "status": "REVIEW",
+        "work_status": work_status,
+        "category": infer_category(summary.lower(), work_type),
+        "priority": infer_priority(summary.lower()),
+        "outcome": outcome,
+        "next_step": next_step,
+        "tags": infer_tags(summary.lower()),
         "challenges": challenges,
         "findings": findings,
         "fixes": fixes,
@@ -179,6 +194,14 @@ def infer_area(lower: str) -> str:
         "permalink": "Website",
         "image": "Media / Assets",
         "icon": "Media / Assets",
+        "client": "Client Work",
+        "poster": "Design",
+        "invoice": "Administration",
+        "workstation": "ICT Support",
+        "spreadsheet": "Data / Records",
+        "training": "Training",
+        "field data": "Field Work",
+        "customer": "Customer Support",
     }
     for needle, area in areas.items():
         if needle in lower:
@@ -187,12 +210,107 @@ def infer_area(lower: str) -> str:
 
 
 def infer_work_type(lower: str, event: SemanticEventSchema | None = None) -> str:
+    if any(word in lower for word in ["meeting", "met the client", "requirements meeting"]):
+        return "Meeting"
+    if any(word in lower for word in ["email", "called", "contacted", "sent", "whatsapp", "client feedback", "approval"]):
+        return "Communication"
+    if any(word in lower for word in ["poster", "design", "homepage", "layout", "branding"]):
+        return "Design"
+    if any(word in lower for word in ["invoice", "spreadsheet", "administration", "admin"]):
+        return "Administration"
+    if any(word in lower for word in ["workstation", "installed", "network access", "support", "customer support"]):
+        return "Support"
+    if any(word in lower for word in ["documented", "documentation", "report", "reviewing a document"]):
+        return "Documentation"
+    if any(word in lower for word in ["training", "trained", "delivered training"]):
+        return "Training"
+    if any(word in lower for word in ["field data", "site visit", "collected"]):
+        return "Field Work"
     if event and (event.pending_actions or event.open_questions):
-        return "Investigation"
+        return "Investigation / Research"
     if any(word in lower for word in ["bug", "fixed", "resolved", "issue", "error"]):
         return "Issue Resolution"
     if any(word in lower for word in ["implemented", "added", "built", "created", "changed", "updated"]):
-        return "Deliverable Work"
-    if any(word in lower for word in ["investigat", "checked", "found", "confirmed", "inspected"]):
-        return "Investigation"
-    return "Work Log"
+        return "Feature / Deliverable"
+    if any(word in lower for word in ["deploy", "released", "published"]):
+        return "Deployment"
+    if any(word in lower for word in ["test", "tested", "qa"]):
+        return "Testing"
+    if any(word in lower for word in ["investigat", "research", "checked", "found", "confirmed", "inspected"]):
+        return "Investigation / Research"
+    return "General Work"
+
+
+def infer_work_status(lower: str, event: SemanticEventSchema | None = None) -> str:
+    if event and (event.pending_actions or event.open_questions):
+        return "BLOCKED" if any(token in lower for token in ["blocked", "not resolved", "not yet", "not confirmed", "unresolved"]) else "IN_PROGRESS"
+    if any(token in lower for token in ["blocked", "awaiting", "waiting for", "not resolved", "not yet", "not confirmed", "unresolved"]):
+        return "BLOCKED" if "awaiting" not in lower and "waiting for" not in lower else "IN_PROGRESS"
+    if any(token in lower for token in ["completed", "configured", "installed", "tested", "documented", "sent", "delivered", "prepared"]):
+        return "COMPLETED"
+    if any(token in lower for token in ["planned", "will", "need to"]):
+        return "PLANNED"
+    return "IN_PROGRESS"
+
+
+def infer_category(lower: str, work_type: str) -> str | None:
+    if "client" in lower:
+        return "Client Work"
+    if "workstation" in lower or "network" in lower or "ict" in lower:
+        return "ICT Support"
+    if "payment" in lower or "spreadsheet" in lower:
+        return "Records"
+    if work_type in {"Meeting", "Communication", "Design", "Administration", "Support", "Training", "Field Work"}:
+        return work_type
+    return None
+
+
+def infer_priority(lower: str) -> str:
+    if any(token in lower for token in ["urgent", "asap", "critical"]):
+        return "URGENT"
+    if any(token in lower for token in ["important", "high priority"]):
+        return "HIGH"
+    if "low priority" in lower:
+        return "LOW"
+    return "NORMAL"
+
+
+def infer_outcome(summary: str, event: SemanticEventSchema | None, work_status: str) -> str | None:
+    if work_status not in {"COMPLETED", "IN_PROGRESS"}:
+        return None
+    lower = summary.lower()
+    if any(token in lower for token in ["not resolved", "not yet", "not confirmed", "unresolved"]):
+        return None
+    if "sent" in lower and "approval" in lower:
+        return "Revised work sent for approval."
+    if "configured" in lower and "tested" in lower:
+        return "Workstation configured and tested."
+    if event and event.actions_performed:
+        return join_unique([fact.statement for fact in event.actions_performed[:2]])
+    return None
+
+
+def infer_next_step(pending_work: str | None, summary: str, work_status: str) -> str | None:
+    if pending_work:
+        return pending_work
+    lower = summary.lower()
+    if "approval" in lower:
+        return "Await approval."
+    if work_status in {"BLOCKED", "IN_PROGRESS"} and any(token in lower for token in ["not resolved", "not yet", "not confirmed", "unresolved"]):
+        return "Confirm the unresolved item before marking the work complete."
+    return None
+
+
+def infer_tags(lower: str) -> list[str]:
+    tags = []
+    for needle, tag in [
+        ("client", "client-requested"),
+        ("approval", "awaiting-approval"),
+        ("backend", "backend"),
+        ("poster", "design"),
+        ("spreadsheet", "spreadsheet"),
+        ("urgent", "urgent"),
+    ]:
+        if needle in lower:
+            tags.append(tag)
+    return tags

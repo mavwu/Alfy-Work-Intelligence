@@ -25,6 +25,7 @@ def client(tmp_path, monkeypatch):
     import app.bootstrap
     import app.services.fts
     import app.routers.work
+    import app.routers.evidence
     import app.routers.system
     import app.main
 
@@ -32,6 +33,7 @@ def client(tmp_path, monkeypatch):
     importlib.reload(app.services.fts)
     importlib.reload(app.routers.system)
     importlib.reload(app.routers.work)
+    importlib.reload(app.routers.evidence)
     importlib.reload(app.main)
     with TestClient(app.main.app) as test_client:
         yield test_client

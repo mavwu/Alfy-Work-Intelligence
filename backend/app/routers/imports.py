@@ -52,6 +52,11 @@ async def import_documents(files: list[UploadFile] = File(...), use_as_style_ref
                 summary=item_data["summary"],
                 work_date=item_data.get("work_date"),
                 status="REVIEW",
+                work_status=item_data.get("work_status") or "IN_PROGRESS",
+                category=item_data.get("category"),
+                priority=item_data.get("priority") or "NORMAL",
+                outcome=item_data.get("outcome"),
+                next_step=item_data.get("next_step"),
                 evidence_confidence="INFERRED",
                 challenges=item_data.get("challenges"),
                 findings=item_data.get("findings"),
@@ -65,6 +70,7 @@ async def import_documents(files: list[UploadFile] = File(...), use_as_style_ref
                 Evidence(
                     workspace_id=workspace.id,
                     work_item_id=item.id,
+                    evidence_type="IMPORTED_DOCUMENT",
                     source_type="IMPORTED_DOCUMENT",
                     source_id=str(doc.id),
                     title=f"{doc.filename}: {item.title}",
@@ -72,6 +78,8 @@ async def import_documents(files: list[UploadFile] = File(...), use_as_style_ref
                     confidence="INFERRED",
                 )
             )
+            db.flush()
+            upsert_fts(db, "evidence", f"import-{doc.id}-{item.id}", workspace.id, f"{doc.filename}: {item.title}", item.summary, "IMPORTED_DOCUMENT", item.work_date)
             upsert_fts(db, "work_item", item.id, workspace.id, item.title, item.summary, item.work_type or "Imported work", item.work_date)
             extracted.append({"id": item.id, "title": item.title, "summary": item.summary})
         db.commit()
