@@ -182,3 +182,7 @@ npm run build
 - Backend startup smoke test: passing.
 - Frontend Vite startup smoke test: passing.
 - Core workflow smoke test: work log -> confirm work item -> generate weekly report -> export DOCX.
+
+## Implementation guide
+
+See the [implementation guide](docs/PROJECT_GUIDE.md) for repository scope, local evaluation, code responsibilities, and verification expectations.
